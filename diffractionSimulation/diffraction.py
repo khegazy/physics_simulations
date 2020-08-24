@@ -13,12 +13,6 @@ from multiprocessing import Pool
 from functools import partial
 
 
-#from absl import app
-#from absl import flags
-#from absl import logging
-
-#import jax as jax
-#import jax.numpy as jnp 
 
 parser = argparse.ArgumentParser()
 
@@ -322,7 +316,6 @@ def get_molecule_distances(FLAGS, logging):
         Natoms = int(ln)
       elif i > 1:
         vals = ln.split()
-        print("l",ln, vals)
         atom_types.append(vals[0])
         pos = [float(x) for x in vals[1:]]
         atom_positions.append(np.array([pos]))
@@ -349,7 +342,7 @@ def get_molecule_distances(FLAGS, logging):
       atom_distances_xyz, atom_distances_polar, atom_distances_types
 
 
-def get_wignerD(phi_ea, theta_ea, chi_ea, l, m):
+def get_wignerD_comparison(phi_ea, theta_ea, chi_ea, l, m):
   lmm = np.ones((2*l+1, 3))*l
   lmm[:,1] -= np.arange(2*l+1)
   lmm[:,2] = m
@@ -358,47 +351,6 @@ def get_wignerD(phi_ea, theta_ea, chi_ea, l, m):
   D_ME = sf.Wigner_D_element(phi_ea, theta_ea, chi_ea, lmm)
   return D_ME, lmm
 
-
-def rotate_Ylm(phi_ea, theta_ea, chi_ea, l, m, polar, azim):
-  D_ME, lmm = get_wignerD(phi_ea, theta_ea, chi_ea, l, m)
-  D_ME = np.expand_dims(np.expand_dims(D_ME, axis=-1), axis=-1)
-  #Ylms = sp.special.sph_harm(lmm[:,1],1, s[:,1], s[:,2])
-  Ylms = sp.special.sph_harm(
-    np.expand_dims(np.expand_dims(lmm[:,1],-1), -1),
-    np.expand_dims(np.expand_dims(lmm[:,0],-1), -1),
-    np.expand_dims(azim,0),        
-    np.expand_dims(polar,0))
-  #print(lmm)
-  #print(D_ME)
-  #print(Ylms)
-  #print("shapes ", D_ME.shape, Ylms.shape)
-  return np.sum(D_ME*Ylms, axis=0)
-
-
-def get_wignerD_map(phi_ea, theta_ea, chi_ea, l, m):
-  lmm = np.ones((2*l+1, 3))*l
-  lmm[:,1] -= np.arange(2*l+1)
-  lmm[:,2] = m
-  lmm = lmm.astype(int)
-
-  print(phi_ea.shape, theta_ea.shape, chi_ea.shape, lmm.shape)
-  D_ME = sf.Wigner_D_element(phi_ea, theta_ea, chi_ea, np.expand_dims(lmm, axis=0))
-  return D_ME, lmm
-
-def rotate_Ylm_map(phi_ea, theta_ea, chi_ea, l, m, polar, azim):
-  D_ME, lmm = get_wignerD_map(phi_ea, theta_ea, chi_ea, l, m)
-  D_ME = np.expand_dims(np.expand_dims(D_ME, axis=-1), axis=-1)
-  #Ylms = sp.special.sph_harm(lmm[:,1],1, s[:,1], s[:,2])
-  Ylms = sp.special.sph_harm(
-    np.expand_dims(np.expand_dims(lmm[:,1],-1), -1),
-    np.expand_dims(np.expand_dims(lmm[:,0],-1), -1),
-    np.expand_dims(azim,0),        
-    np.expand_dims(polar,0))
-  #print(lmm)
-  #print(D_ME)
-  #print(Ylms)
-  #print("shapes ", D_ME.shape, Ylms.shape)
-  return np.sum(D_ME*Ylms, axis=0)
 
 def small_factorial(start, end):
   start = np.max(start, 1)
@@ -444,14 +396,12 @@ def get_wignerD_3d(phi_ea, theta_ea, chi_ea, l, m):
   lmbd = (m_sum - m)*np.maximum(0, (1-k_inds%3))
 
   # Calculate little d
-  print(a.shape, b.shape, k.shape, theta_ea.shape)
   d_coeff = (-1)**lmbd*np.sqrt(nCk_np(2*l-k, k+a))/np.sqrt(nCk_np(k+b, b))\
       *np.sin(theta_ea/2)**a*np.cos(theta_ea/2)**b
   d = np.zeros_like(d_coeff)
   cos_theta = np.cos(theta_ea)
   for im in range(m_sum.shape[-1]):
     p = jacobi(k[0,im], a[0,im], b[0,im])
-    print("SHAPE", np.polyval(p, cos_theta).shape, d_coeff[:,im].shape)
     d[:,im] = d_coeff[:,im]*np.polyval(p, cos_theta)[:,0]
 
   # Calculate D matrix element
@@ -489,15 +439,10 @@ def make_diffraction(
     # Rotate Y10 so it points in direction of r in lf
     #D_ME_, lmm = get_wignerD(r_diff[2], r_diff[1], 0, 1, 0)
     D_ME, l, m_sum, m = get_wignerD_3d(
-        np.array([r_diff[2]]), np.array([r_diff[1]]), np.zeros(1), 1, 0)#np.zeros_like(r_diff[2]), 2, 1)
-    print(D_ME.shape, D_ME)
+        np.array([r_diff[2]]), np.array([r_diff[1]]), np.zeros(1), 1, 0)
     D_ME = D_ME[:,0]
 
-    print("D", D_ME)
-    print(m_sum, D_ME.shape)
-    #for il,(l,m,_) in enumerate(lmm):
     for im, m in enumerate(m_sum):
-      #print("loop1", l,m,D_ME[il])
       if np.abs(D_ME[im]) <= 1e-10:
         #print("skipping")
         continue
@@ -506,17 +451,10 @@ def make_diffraction(
           *rotate_Ylm_3d(smearing_ea[:,0], smearing_ea[:,1], smearing_ea[:,2],\
             l, m, s_map_polar[:,:,1], s_map_polar[:,:,2])
       s_dot_r_lf  = np.real(s_dot_r_lf_)
-      print("SHAPE!!!!",(smearing_weights*np.cos(s_dot_r_lf)).shape)
       smearing = np.sum(smearing_weights*np.cos(s_dot_r_lf), axis=0)
       diffraction += smearing*scat_amps[atom_types[ir][0]](s_map_polar[:,:,0])\
           *scat_amps[atom_types[ir][1]](s_map_polar[:,:,0])
-      #for i,(weight_ea, euler_angles) in enumerate(zip(smearing_weights, smearing_ea)):
-      #  s_dot_r_lf_ = D_ME[il]*(s_map_polar[:,:,0]*r_diff[0]/(0.5*np.sqrt(3/np.pi)))\
-      #      *rotate_Ylm(euler_angles[0], euler_angles[1], euler_angles[2],\
-      #        l, m, s_map_polar[:,:,1], s_map_polar[:,:,2])
-      #  s_dot_r_lf  = np.real(s_dot_r_lf_)
-      #  diffraction += weight_ea*np.cos(s_dot_r_lf)\
-      #      *scat_amps[atom_types[ir][0]](s_map_polar[:,:,0])*scat_amps[atom_types[ir][1]](s_map_polar[:,:,0])
+  
   return diffraction
 
 
@@ -561,9 +499,7 @@ def main(FLAGS):
   incoming_e[:,:,1] = k0
   s_xyz_lf    = k0*signal_xyz_qf/np.expand_dims(np.linalg.norm(signal_xyz_qf, axis=-1), axis=-1) - incoming_e
   s_map    = np.linalg.norm(s_xyz_lf, axis=-1)
-  #s_map       = 4*np.pi*np.sin(np.arctan(pixel_dist/FLAGS.beamline_length)/2)/db_wvl
   s_theta_lf  = np.zeros_like(z)
-  #s_theta_lf[zero_mask]  = np.arctan2(x[zero_mask], z[zero_mask])
   s_theta_lf[zero_mask]  = np.arccos(s_xyz_lf[zero_mask,2]/s_map[zero_mask])
   s_phi_lf  = np.zeros_like(z)
   s_phi_lf[zero_mask]  = np.arctan2(s_xyz_lf[zero_mask,1], s_xyz_lf[zero_mask,0])
@@ -602,12 +538,6 @@ def main(FLAGS):
       (smearing_polar.shape[0], smearing_azim.shape[0], smearing_spin.shape[0], 3))
 
  
-  """
-  for i in range(FLAGS.smear_polar_bins):
-    smearing_ea[i,:,:,1] = smearing_polar[i]
-
-  smearing_ea[:,azim_inds,:,0]  = smearing_azim[azim_inds]
-  """
   for i in range(FLAGS.smear_polar_bins):
     smearing_ea[i,:,:,0]  = smearing_azim[i]
     for k in range(FLAGS.smear_azim_bins):
@@ -621,41 +551,22 @@ def main(FLAGS):
       atom_distances_types, atom_distances_polar,
       smearing_ea, smearing_jacobian, scat_amps)
 
-  print(atom_distances_polar.shape)
+  
+  """  
   rand_diff = np.zeros_like(diffraction)
   for ir, r_diff in enumerate(atom_distances_polar):
-      #scat_amps[atom_types[ir][0]](s_map_polar[:,:,0])\
-      print(r_diff)
       rand_diff += scat_amps[atom_distances_types[ir][0]](s_map)*scat_amps[atom_distances_types[ir][1]](s_map)*np.sinc(s_map*r_diff[0]/np.pi)
-      #rand_diff += scat_amps[atom_types[ir][0]](s_map)*scat_amps[atom_types[ir][1]](s_map)#*np.sinc(s_map*r_diff[0])
 
   iind = diffraction.shape[0]//2
   plt.plot(s_map[iind,:], diffraction[iind,:]/np.amax(diffraction[iind,:]), 'k-')
   plt.plot(s_map[iind,:], rand_diff[iind,:]/np.amax(rand_diff[iind,:]), 'b-')
   plt.savefig("testDiffLO.png")
   plt.close()
-
-  print("PASSED FIRST")
-  """
-  
-  smearing_polar_at   = np.arange(FLAGS.smear_polar_bins)*np.pi/FLAGS.smear_polar_bins
-  smearing_azim_at    = np.arange(FLAGS.smear_azim_bins)*2*np.pi/FLAGS.smear_azim_bins
-  azim_inds           = np.arange(len(smearing_azim_at)).astype(int)
-  smearing_ea         = np.zeros((smearing_polar_at.shape[0], smearing_azim_at.shape[0], 3))
-
-  for i in range(FLAGS.smear_polar_bins):
-    smearing_ea[i,:,1] = smearing_polar[i]
-
-  smearing_ea[:,azim_inds,0]  = smearing_azim[azim_inds]
-  smearing_ea       = np.reshape(smearing_ea, (-1,3))
-  smearing_weights  = np.sin(smearing_ea[:,1])
   """
 
-  print("SHAPES", bases.shape)
+
   sh_l = np.arange(bases.shape[0])*2
   sh_m = np.zeros_like(sh_l)
-  #bases[0,:] = 0 #FIX ME
-  print("TIMES", times)
   for tm in range(bases.shape[-1]):
     """
     print("weights",bases[:,tm])
@@ -675,17 +586,6 @@ def main(FLAGS):
         FLAGS, s_map_polar,
         atom_distances_types, atom_distances_polar,
         smearing_ea, smearing_weights, scat_amps)
-
-    #print(diffraction[int(FLAGS.width_bins/2),int(FLAGS.width_bins/2):])
-    #print(np.sinc(s_map[int(FLAGS.width_bins/2),int(FLAGS.width_bins/2):]/np.pi)*diffraction[int(FLAGS.width_bins/2),int(FLAGS.width_bins/2)])
-    #print(s_map[int(FLAGS.width_bins/2),int(FLAGS.width_bins/2):])
-    #plt.imshow(np.real(s_dot_r_lf))
-    #plt.savefig("testsdr.png")
-    #plt.close()
-    #s_dot_r_lf = s_map*s_dot_r_lf
-    #s_dot_r_lf = np.real(s_dot_r_lf)
-    #print(s_dot_r_lf)
-    #diffraction = np.cos(s_dot_r_lf)
 
     # Saving Results
     fName = os.path.join("output",
@@ -713,101 +613,8 @@ def main(FLAGS):
 
 
 
-
-  """
-  s_map       = 4*np.pi*np.sin(pixel_theta_lf/2)/db_wvl
-  s_theta_lf  = np.arcsin(k0*pixel_theta_lf/(np.linalg.norm(pixel_theta_lf)*s_map))
-  s_phi_lf    = pixel_phi_lf
-  # Passive rotation to the mf
-  lmm = np.ones((3,3))
-  lmm[0,1] = -1
-  lmm[1,1] = 0 
-  a,b,c = -1*np.pi/2, -1*np.pi/2, 0
-  euler_angles = (-1*a, -1*b, -1*c)
-  Y11_mf = rotate_Ylm(*euler_angles, lmm, s_theta_lf, s_phi_lf)
-  lmm[:,2] = 0
-  Y10_mf = rotate_Ylm(*euler_angles, lmm, s_theta_lf, s_phi_lf)
-  lmm[:,2] = -1
-  Y1n1_mf = rotate_Ylm(*euler_angles, lmm, s_theta_lf, s_phi_lf)
-  Y1m_norm = 0.5*np.sqrt(3/np.pi)
-  s_theta_mf  = np.arccos(Y10_mf/Y1m_norm)
-  s_phi_mf    = np.arcsin((-1*(Y11_mf + Y1n1_mf)/(np.sin(s_theta_mf)*Y1m_norm)))
-  print(s_theta_lf)
-  print(s_phi_lf)
-  print("MF")
-  print(s_theta_mf)
-  print(s_phi_mf)
-
-  s_polar_map = np.concatenate([
-      np.reshape(s_map, -1),
-      np.reshape(s_theta_map, -1),
-      np.reshape(s_phi_map, -1)
-  ])
-  """
-
-  """
-  def sdr_lf(s, r, euler_angles):
-    lmm = np.ones((3,3))
-    lmm[0,1] = -1
-    lmm[1,1] = 0 
-    lmm[:,2] = 0
-    return s[:,0]*r[0]*rotate_Ylm(*euler_angles, lmm, s[:,1], s[:2])
-
-  print(sdr_lf(np.array([[1,0,0]]), [1], (0,0,0)))
-  print(sdr_lf(np.array([[1,0,0], [1,np.pi, 0]]), [1], (0,0,0)))
-  """
-  """
-  def sdr_lf(s_polar_lf, r_mag, mol_rotation_mf):
-    sdr = r_mag*s_polar_lf[:,:,0]*(\
-        2*np.sqrt(2)*np.sin(mol_rotation_mf[0])*np.sin(mol_rotation_mf[1])*np.sin(s_polar_lf[:,:,1])*np.cos(s_polar_lf[:,:,2])\
-        + np.sqrt(2)*np.sin(mol_rotation_mf[0])*np.cos(mol_rotation_mf[1])*np.cos(s_polar_lf[:,:,1])\
-        + np.sqrt(2)*np.cos(mol_rotation_mf[0])*np.sin(s_polar_lf[:,:,1])*np.sin(s_polar_lf[:,:,2]))
-    
-    return sdr
-
-
-  signal = np.cos(sdr_lf(s_polar_lf, 1, np.array([0,0])))
-  """
-
 if __name__ == '__main__':
   FLAGS = setup(parser)
   main(FLAGS)
   
-  
-"""
-def get_wignerD_3d_(phi_ea, theta_ea, chi_ea, l, m):
-
-  m_sum[0,:,0] = np.ones(2*l+1)*l - np.arange(2*l+1)
-  m_sum *= -1 # Must flip the sign for the spin-weighted SH
-  n_sum = np.expand_dims(np.expand_dims(np.arange(l-m), 0), 0)
-  theta_ea = np.expand_dims(np.expand_dims(theta_ea, -1), -1)
-  phi_ea   = np.expand_dims(np.expand_dims(phi_ea, -1), -1)
-  chi_ea   = np.expand_dims(chi_ea, -1)
-
-
-  print(m_sum.shape, n_sum.shape, theta_ea.shape, phi_ea.shape, chi_ea.shape)
-  print(theta_ea, phi_ea)
-  # Factors of (-1)^m cancel
-  D_coeff = np.sqrt(4*np.pi/(2*l+1))
-  SWSH_coeff = (np.sin(theta_ea/2)**(2*l))*np.sqrt(
-      factorial(l+m_sum)*factorial(l-m_sum)*factorial(2*l+1)\
-      /(4*np.pi*factorial(1, l+m)*factorial(1, l-m)))\
-      *np.exp(np.complex(0,1)*m_sum)
-  #for n in range(0, l-m):
-  SWSH_sum_array = (-1)**(l - n_sum - m)\
-      *nCk_np(l-m, n_sum)*nCk_np(l+m, n_sum+m-m_sum)\
-      /((np.tan(theta_ea/2) + 1e-10)**(2*n_sum+m-m_sum))
-  print(SWSH_coeff.shape)
-  print(SWSH_coeff)
-  print(SWSH_sum_array.shape)
-  print(SWSH_sum_array)
-  print(1/((np.tan(theta_ea/2) + 1e-10)**(2*n_sum+m-m_sum)))
-  print(nCk_np(l-m, n_sum),nCk_np(l+m, n_sum+m-m_sum))
-  print((n_sum+m-m_sum).shape, n_sum+m-m_sum)
-  SWSH = SWSH_coeff*SWSH_sum_array
-  D_ME = np.sum(SWSH, -1)*np.exp(np.complex(0, -1*m*chi_ea))
-
-  return D_ME, l, -1*m_sum, m
-"""
-
 
