@@ -12,7 +12,8 @@ from scipy.special import factorial, jacobi
 from multiprocessing import Pool
 from functools import partial
 
-
+from modules.script_setup import *
+from modules.ADM import *
 
 parser = argparse.ArgumentParser()
 
@@ -89,6 +90,7 @@ atom_names = {
   "I" : "iodine"
 }
 
+"""
 def setup(parser):
   FLAGS = parser.parse_args()
 
@@ -105,7 +107,7 @@ def setup(parser):
   logging.getLogger('').addHandler(console)
 
   return FLAGS
-
+"""
 
 def get_scattering_amplitudes(FLAGS, atom_types):
 
@@ -136,7 +138,7 @@ def get_scattering_amplitudes(FLAGS, atom_types):
 
   return scat_amps
 
-
+"""
 def get_bases(FLAGS, logging, normalize=False, plot=False):
   bases = {}
   norms = {}
@@ -289,6 +291,7 @@ def apply_fit_parameters(FLAGS, bases, times, logging):
     bases = bases_interp(eval_times)
     
     return None, bases, eval_times
+"""
 
 def calculate_deBroglie_wavelength(FLAGS):
   C_AU = 1./0.0072973525664
@@ -426,14 +429,25 @@ def rotate_Ylm_3d(phi_ea, theta_ea, chi_ea, l, m, polar, azim):
       *np.expand_dims(Ylms, 1), axis=0)
 
 
+def make_atomic_diffraction(
+    detector_shape, detector_dist, s_map_polar,
+    atom_types, scat_amps):
+
+  diffraction = np.zeros((int(detector_shape[0]), int(detector_shape[1])))
+  for atm in atom_types:
+    diffraction += (1/detector_dist**2)*scat_amps[atm](s_map_polar[:,:,0])**2
+  
+  return diffraction
+
+
 def make_diffraction(
-    FLAGS, s_map_polar,
+    detector_shape, detector_dist, s_map_polar,
     atom_types, atom_distances_polar,
     smearing_ea, smearing_weights,
     scat_amps):
 
   smearing_weights = np.expand_dims(np.expand_dims(smearing_weights, -1), -1)
-  diffraction = np.zeros((FLAGS.height_bins, FLAGS.width_bins))
+  diffraction = np.zeros((int(detector_shape[0]), int(detector_shape[1])))
   for ir, r_diff in enumerate(atom_distances_polar):
 
     # Rotate Y10 so it points in direction of r in lf
@@ -453,9 +467,44 @@ def make_diffraction(
       s_dot_r_lf  = np.real(s_dot_r_lf_)
       smearing = np.sum(smearing_weights*np.cos(s_dot_r_lf), axis=0)
       diffraction += smearing*scat_amps[atom_types[ir][0]](s_map_polar[:,:,0])\
-          *scat_amps[atom_types[ir][1]](s_map_polar[:,:,0])
+          *scat_amps[atom_types[ir][1]](s_map_polar[:,:,0])/(detector_dist**2)
   
   return diffraction
+
+
+def alignment_diffraction(
+    itm, times, bases,
+    detector_shape, detector_dist, s_map_polar,
+    atom_types, atom_distances_polar,
+    smearing_ea, smearing_jacobian, scat_amps):
+
+  sh_l = np.arange(bases.shape[0])*2
+  sh_m = np.zeros_like(sh_l)
+  smearing_weights = np.real(np.sum(np.expand_dims(bases[:,itm], axis=-1)\
+      *sp.special.sph_harm(
+        np.expand_dims(sh_m, axis=-1), np.expand_dims(sh_l, axis=-1),\
+        np.expand_dims(smearing_ea[:,1], axis=0), np.expand_dims(smearing_ea[:,0], axis=0)),
+      axis=0)).astype(np.float64)
+  smearing_weights *= smearing_jacobian
+
+  diffraction = make_diffraction(
+      detector_shape, detector_dist, s_map_polar,
+      atom_types, atom_distances_polar,
+      smearing_ea, smearing_weights, scat_amps)
+
+  # Saving Results
+  fName = os.path.join("output",
+      "mol_diffraction_Q-{0:.5g}_time-{1:.3g}.npy".format(
+        s_map_polar[s_map_polar.shape[0]//2,-1,0], times[itm]))
+  with open(fName, "wb") as file:
+    np.save(file, diffraction)
+  
+  fName = os.path.join("output",
+      "mol_diffraction_Q-{0:.5g}_time-{1:.3g}_shape[{2},{3}].dat".format(
+        s_map_polar[s_map_polar.shape[0]//2,-1, 0], times[itm],
+        diffraction.shape[0], diffraction.shape[1]))
+  with open(fName, "wb") as file:
+    diffraction.astype(np.double).tofile(file)
 
 
 
@@ -487,6 +536,7 @@ def main(FLAGS):
       np.linspace(-1*FLAGS.detector_width/2, FLAGS.detector_width/2, FLAGS.width_bins),
       np.linspace(-1*FLAGS.detector_height/2, FLAGS.detector_height/2, FLAGS.height_bins))
   pixel_dist = np.sqrt(x**2 + z**2)
+  detector_dist = np.sqrt(pixel_dist**2 + FLAGS.beamline_length**2)
   zero_mask = pixel_dist > 0
 
   signal_xyz_qf = np.concatenate([
@@ -510,6 +560,26 @@ def main(FLAGS):
       np.expand_dims(s_phi_lf, axis=-1)],
       axis=-1)
 
+  atm_diffraction = make_atomic_diffraction(
+      (FLAGS.width_bins, FLAGS.height_bins), detector_dist,
+      s_map_polar, atom_types, scat_amps)
+
+
+  # Saving Results
+  fName = os.path.join("output",
+      "atm_diffraction_Q-{0:.5g}.npy".format(s_map[s_map.shape[0]//2,-1]))
+  with open(fName, "wb") as file:
+    np.save(file, atm_diffraction)
+ 
+  print(atm_diffraction.shape)
+  fName = os.path.join("output",
+      "atm_diffraction_Q-{0:.5g}_shape[{1},{2}].dat".format(
+        s_map[s_map.shape[0]//2,-1],
+        atm_diffraction.shape[0], atm_diffraction.shape[1]))
+  with open(fName, "wb") as file:
+    atm_diffraction.astype(np.double).tofile(file)
+
+
   im = plt.imshow(s_map)
   plt.colorbar(im)
   plt.savefig("testS.png")
@@ -522,6 +592,7 @@ def main(FLAGS):
   plt.colorbar(im)
   plt.savefig("testPH.png")
   plt.close()
+
 
 
   # Ensemble smearing
@@ -546,13 +617,14 @@ def main(FLAGS):
   smearing_ea       = np.reshape(smearing_ea, (-1,3))
   smearing_jacobian = np.sin(smearing_ea[:,1])
 
+  
+  """  
   diffraction = make_diffraction(
-      FLAGS, s_map_polar,
+      FLAGS, s_map_polar, detector_dist,
       atom_distances_types, atom_distances_polar,
       smearing_ea, smearing_jacobian, scat_amps)
 
   
-  """  
   rand_diff = np.zeros_like(diffraction)
   for ir, r_diff in enumerate(atom_distances_polar):
       rand_diff += scat_amps[atom_distances_types[ir][0]](s_map)*scat_amps[atom_distances_types[ir][1]](s_map)*np.sinc(s_map*r_diff[0]/np.pi)
@@ -565,8 +637,6 @@ def main(FLAGS):
   """
 
 
-  sh_l = np.arange(bases.shape[0])*2
-  sh_m = np.zeros_like(sh_l)
   for tm in range(bases.shape[-1]):
     """
     print("weights",bases[:,tm])
@@ -576,26 +646,38 @@ def main(FLAGS):
         axis=0)).astype(np.float64)
     print("IMAGE", np.sum(np.abs(smearing_weights)))
     """
-    smearing_weights = np.real(np.sum(np.expand_dims(bases[:,tm], axis=-1)*sp.special.sph_harm(
+    
+    alignment_diffraction(
+        tm, times, bases,
+        (FLAGS.width_bins, FLAGS.height_bins),
+        detector_dist, s_map_polar,
+        atom_distances_types, atom_distances_polar,
+        smearing_ea, smearing_jacobian, scat_amps)
+
+    """
+    smearing_weights = np.real(np.sum(np.expand_dims(bases[:,tm], axis=-1)\
+        *sp.special.sph_harm(
           np.expand_dims(sh_m, axis=-1), np.expand_dims(sh_l, axis=-1),\
           np.expand_dims(smearing_ea[:,1], axis=0), np.expand_dims(smearing_ea[:,0], axis=0)),
         axis=0)).astype(np.float64)
     smearing_weights *= smearing_jacobian
 
     diffraction = make_diffraction(
-        FLAGS, s_map_polar,
+        FLAGS, s_map_polar, detector_dist,
         atom_distances_types, atom_distances_polar,
         smearing_ea, smearing_weights, scat_amps)
 
     # Saving Results
     fName = os.path.join("output",
-        "mol_diffraction_time-{0:.3g}.npy".format(times[tm]))
+        "mol_diffraction_Q-{}_time-{0:.3g}.npy".format(
+          s_map[s_map.shape[0]//2,-1], times[tm]))
     with open(fName, "wb") as file:
       np.save(file, diffraction)
     
     fName = os.path.join("output",
-        "mol_diffraction_time-{0:.3g}_shape-{1}-{2}.dat".format(
-          times[tm], diffraction.shape[0], diffraction.shape[1]))
+        "mol_diffraction_Q-{0}_time-{1:.3g}_shape-{2}-{3}.dat".format(
+          s_map[s_map.shape[0]//2,-1], times[tm],
+          diffraction.shape[0], diffraction.shape[1]))
     with open(fName, "wb") as file:
       diffraction.astype(np.double).tofile(file)
 
@@ -607,6 +689,7 @@ def main(FLAGS):
     plt.colorbar(plc)
     plt.savefig("./plots/molDiffraction_aniso_time-{}.png".format(tm))
     plt.close()
+    """
   sys.exit(0)
 
 
