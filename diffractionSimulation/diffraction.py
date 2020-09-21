@@ -4,6 +4,7 @@ import argparse
 import pickle as pl
 import numpy as np
 import scipy as sp
+import h5py
 import matplotlib.pyplot as plt
 #import spherical_functions as sf
 from scipy.interpolate import interp1d
@@ -12,17 +13,31 @@ from scipy.special import factorial, jacobi
 from multiprocessing import Pool
 from functools import partial
 
+sys.path.append("../../")
+from parameters import get_parameters
 from modules.script_setup import *
 from modules.ADM import *
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
-    '--molecule', type=str, required=True,
+    '--molName', type=str, default="NULL",
     help='Name of the molecule.'
 )
 parser.add_argument(
-    '--xyz_file', type=str, required=True,
+    '--run', type=str, default="NULL",
+    help='Run name.'
+)
+parser.add_argument(
+    '--calculation_type', type=str, default="analytic",
+    help='Use parameters.py'
+)
+parser.add_argument(
+    '--get_parameters', type=bool, default=True,
+    help='Use parameters.py'
+)
+parser.add_argument(
+    '--xyz_file', type=str, default="NULL",
     help='Address to XYZ file.'
 )
 parser.add_argument(
@@ -30,15 +45,11 @@ parser.add_argument(
     help='Detector width in meters.'
 )
 parser.add_argument(
-    '--width_bins', default=29, type=int,
-    help='Number of width bins.'
-)
-parser.add_argument(
     '--detector_height', default=0.04, type=float,
     help='Detector height in meters.'
 )
 parser.add_argument(
-    '--height_bins', default=29, type=int,
+    '--imgBins', default=29, type=int,
     help='Number of height bins.'
 )
 parser.add_argument(
@@ -70,11 +81,11 @@ parser.add_argument(
     help='Specify which routine to use in get_bases.'
 )
 parser.add_argument(
-    '--smear_time', default=None, type=float,
-    help='Electron pulse width (STD) in fs.'
+    '--probe_FWHM', default=None, type=float,
+    help='Electron pulse width (FWHM) in fs.'
 )
 parser.add_argument(
-    '--scat_amps_path', default="../scatteringAmplitudes/3.7MeV/", type=str,
+    '--scat_amps_dir', default="../scatteringAmplitudes/3.7MeV/", type=str,
     help='Path to folder containing the scattering amplitudes'
 )
 parser.add_argument(
@@ -87,7 +98,8 @@ atom_names = {
   "C" : "carbon",
   "O" : "oxygen",
   "N" : "nitrogen",
-  "I" : "iodine"
+  "I" : "iodine",
+  "S" : "sulfur"
 }
 
 """
@@ -113,13 +125,15 @@ def get_scattering_amplitudes(FLAGS, atom_types):
 
   scat_amps = {}
   dBrog = calculate_deBroglie_wavelength(FLAGS)
+  print("DBW", dBrog)
   for atm in atom_types:
     if atm in scat_amps:
       continue
 
     angStr = []
     sctStr = []
-    fName = os.path.join(FLAGS.scat_amps_path, atom_names[atm] + "_dcs.dat")
+    fName = os.path.join(FLAGS.scat_amps_dir, atom_names[atm] + "_dcs.dat")
+    print(fName)
     with open(fName, 'r') as inpFile:
       ind=0
       for line in inpFile:
@@ -130,7 +144,7 @@ def get_scattering_amplitudes(FLAGS, atom_types):
         angStr.append(line[2:11])
         sctStr.append(line[39:50])   
     
-    angs = np.array(angStr).astype(np.float64)
+    angs = np.array(angStr).astype(np.float64)*np.pi/180
     q = 4*np.pi*np.sin(angs/2.)/dBrog
     scts = np.sqrt(np.array(sctStr).astype(np.float64))
 
@@ -138,160 +152,6 @@ def get_scattering_amplitudes(FLAGS, atom_types):
 
   return scat_amps
 
-"""
-def get_bases(FLAGS, logging, normalize=False, plot=False):
-  bases = {}
-  norms = {}
-  LMK = []
-  if FLAGS.get_bases_type is 0:
-    start_time, end_time = None, None
-    files = "{}/*.dat".format(FLAGS.basis_folder)
-    print("files", files)
-    for fl in glob.glob(files):
-      logging.info("Importing Bases: " + fl)
-      L = int(fl[fl.find("_L-")+3:fl.find("_M-")])
-      with open(fl, "rb") as file:
-        bases[L] = np.fromfile(file, np.double)
-
-        # Normalize bases
-        bases_womean = {}
-        if L != 0:
-          bases_womean[L] = bases[L] - np.mean(bases[L])
-        else:
-          bases_womean[L] = bases[L]
-        #print("norm",L,np.sqrt(np.sum(bases[L]**2)), np.amax(np.abs(bases[L])))
-        norms[L] = np.sqrt(np.sum(bases_womean[L]**2))
-        if normalize:
-          bases[L] = bases_womean[L]
-          bases[L] /= norms[L]
-        
-        # Get Time
-        aind = fl.find("_time-")
-        bind = fl.find("-", aind+7)
-        cind = fl.find("_bins")
-        sTime = float(fl[aind+6:bind])
-        eTime = float(fl[bind+1:cind])
-        if start_time is None:
-          start_time  = sTime
-          end_time    = eTime
-        else:
-          if (start_time != sTime) or (end_time != eTime):
-            logging.critical("Bases do not have the same time range.")
-            sys.exit(1)
-
-    basisList = []
-    normsList = []
-    keys = np.sort(list(bases.keys()))
-    for l in keys:
-      basisList.append(np.expand_dims(bases[l], axis=0))
-      normsList.append(norms[l])
-      LMK.append(np.array([l,0,0]))
-    tLen = basisList[0].shape[-1]
-    times = start_time + np.linspace(0, 1, tLen)*(end_time - start_time)
-
-  elif FLAGS.get_bases_type is 1:
-    L_list = []
-    files = "{}/*.npy".format(FLAGS.basis_folder)
-    print("search", files)
-    for fl in glob.glob(files):
-      logging.info("Importing Bases: " + fl)
-      D = fl[fl.find(" D")+2:-4]
-      ln = len(D) + len(D)%2
-      L = int(D[:ln//2])
-      M = int(D[ln//2:])
-      print(D,L,M)
-      if L not in L_list:
-        L_list.append(L)
-      with open(fl, "rb") as file:
-        bases[(L,M)] = np.load(file)
-        print(bases[(L,M)])
-
-        # Normalize bases
-        bases_womean = {}
-        if L != 0:
-          bases_womean[(L,M)] = bases[(L,M)] - np.mean(bases[(L,M)])
-        else:
-          bases_womean[(L,M)] = bases[(L,M)]
-        #print("norm",L,np.sqrt(np.sum(bases[L]**2)), np.amax(np.abs(bases[L])))
-        norms[(L,M)] = np.sqrt(np.sum(bases_womean[(L,M)]**2))
-        if normalize:
-          bases[(L,M)] = bases_womean[(L,M)]
-          bases[(L,M)] /= norms[(L,M)]
- 
-    sys.exit(0)
-    basisList = []
-    normsList = []
-    print("LIST", L_list)
-    L_list.sort()
-    for l in L_list:
-      for m in np.linspace(0, l, 2, dtype=int):
-        basisList.append(np.expand_dims(bases[(l,m)], axis=0))
-        normsList.append(norms[(l,m)])
-        LMK.append(np.array([l,0,m]))
-
-    fName = FLAGS.basis_folder.replace("/A/", "/times/").replace("temp-", "temp_")\
-        + ".npy"
-    logging.info("Time file: " + fName)
-    with open(fName, "rb") as file:
-      times = np.load(file)
-
-  bases = np.concatenate(basisList, axis=0)
-  if plot:
-    inds = np.arange(len(times))# < 100
-    for i, (L, M, K) in enumerate(LMK):
-      plt.plot(times[inds], bases[i,inds])
-      plt.savefig(os.path.join("./plots", "basis_input_{}-{}-{}.png".format(
-          L, M, K)))
-      plt.close()
-
-
-  if FLAGS.smear_time is not None:
-    delta_time = times[1] - times[0]
-    bases = gaussian_filter1d(
-        bases, FLAGS.smear_time/delta_time, axis=-1)
-
-
-  if plot:
-    inds = np.arange(len(times))# < 100
-    for i, (L, M, K) in enumerate(LMK):
-      plt.plot(times[inds], bases[i,inds])
-      plt.savefig(os.path.join("./plots", "basis_smeared_{}-{}-{}.png".format(
-          L, M, K)))
-      plt.close()
-
-
-  return np.array(LMK), bases, np.array(normsList), times
-
-
-def apply_fit_parameters(FLAGS, bases, times, logging):
-  if FLAGS.basis_params is None and FLAGS.basis_eval_params is None:
-    return None, bases, None
-  
-  if FLAGS.basis_params is not None and FLAGS.basis_eval_params is not None:
-    logging.fatal("Can only specify basis_params OR basis_eval_params")
-    sys.exit(1)
-
-  if FLAGS.basis_params is not None:
-    with open(FLAGS.basis_params, 'rb') as file:
-      params = pl.load(file)
-  
-    eval_times = params['startTime'] + np.arange(40)*0.1
-    bases_interp = interp1d(times, bases, axis=-1)
-    bases = bases_interp(eval_times)
-
-    return params, bases, eval_times
-
-  if FLAGS.basis_eval_params is not None:
-    eval_times = np.linspace(
-        FLAGS.basis_eval_params[0],
-        FLAGS.basis_eval_params[1],
-        FLAGS.basis_eval_params[2])
-    
-    bases_interp = interp1d(times, bases, axis=-1)
-    bases = bases_interp(eval_times)
-    
-    return None, bases, eval_times
-"""
 
 def calculate_deBroglie_wavelength(FLAGS):
   C_AU = 1./0.0072973525664
@@ -307,13 +167,14 @@ def calculate_deBroglie_wavelength(FLAGS):
 
 
 def get_molecule_distances(FLAGS, logging):
-  if not os.path.exists(FLAGS.xyz_file):
-    logging.fatal("Cannot find xyz file: " + FLAGS.xyz_file)
-    sys.exit(1)
+  fName = os.path.join(FLAGS.xyzDir, FLAGS.xyz_file)
+  if not os.path.exists(fName):
+    logging.fatal("Cannot find xyz file: " + fName)
+    sys.exit(0)
   
   atom_types      = []
   atom_positions  = []
-  with open(FLAGS.xyz_file) as file:
+  with open(fName) as file:
     for i,ln in enumerate(file):
       if i == 0:
         Natoms = int(ln)
@@ -472,7 +333,7 @@ def make_diffraction(
   return diffraction
 
 
-def alignment_diffraction(
+def numerical_alignment_diffraction(
     itm, times, bases,
     detector_shape, detector_dist, s_map_polar,
     atom_types, atom_distances_polar,
@@ -525,172 +386,172 @@ def main(FLAGS):
   atom_distances_types = get_molecule_distances(FLAGS, logging)
   scat_amps = get_scattering_amplitudes(FLAGS, atom_types)
 
-  LMK, bases, norms, times  = get_bases(FLAGS, logging, plot=True)
-  params, bases, times      = apply_fit_parameters(FLAGS, bases, times, logging)
-
   db_wvl  = calculate_deBroglie_wavelength(FLAGS) #angs
   k0      = 2*np.pi/db_wvl
 
-  # Set up pixel and s maps
-  x,z = np.meshgrid(
-      np.linspace(-1*FLAGS.detector_width/2, FLAGS.detector_width/2, FLAGS.width_bins),
-      np.linspace(-1*FLAGS.detector_height/2, FLAGS.detector_height/2, FLAGS.height_bins))
-  pixel_dist = np.sqrt(x**2 + z**2)
+  x_lab,z_lab = np.meshgrid(
+      np.linspace(-1*FLAGS.detector_width/2, FLAGS.detector_width/2, FLAGS.imgBins),
+      np.linspace(-1*FLAGS.detector_height/2, FLAGS.detector_height/2, FLAGS.imgBins))
+  pixel_dist = np.sqrt(x_lab**2 + z_lab**2)
   detector_dist = np.sqrt(pixel_dist**2 + FLAGS.beamline_length**2)
-  zero_mask = pixel_dist > 0
 
-  signal_xyz_qf = np.concatenate([
-      np.expand_dims(x, axis=-1),
-      np.expand_dims(np.ones_like(x)*FLAGS.beamline_length, axis=-1),
-      np.expand_dims(z, axis=-1)],
-      axis=-1)
-
-  incoming_e      = np.zeros((1,1,3))
-  incoming_e[:,:,1] = k0
-  s_xyz_lf    = k0*signal_xyz_qf/np.expand_dims(np.linalg.norm(signal_xyz_qf, axis=-1), axis=-1) - incoming_e
-  s_map    = np.linalg.norm(s_xyz_lf, axis=-1)
-  s_theta_lf  = np.zeros_like(z)
-  s_theta_lf[zero_mask]  = np.arccos(s_xyz_lf[zero_mask,2]/s_map[zero_mask])
-  s_phi_lf  = np.zeros_like(z)
-  s_phi_lf[zero_mask]  = np.arctan2(s_xyz_lf[zero_mask,1], s_xyz_lf[zero_mask,0])
-
-  s_map_polar = np.concatenate([
-      np.expand_dims(s_map, axis=-1),
-      np.expand_dims(s_theta_lf, axis=-1),
-      np.expand_dims(s_phi_lf, axis=-1)],
-      axis=-1)
-
-  atm_diffraction = make_atomic_diffraction(
-      (FLAGS.width_bins, FLAGS.height_bins), detector_dist,
-      s_map_polar, atom_types, scat_amps)
-
-
-  # Saving Results
-  fName = os.path.join("output",
-      "atm_diffraction_Q-{0:.5g}.npy".format(s_map[s_map.shape[0]//2,-1]))
-  with open(fName, "wb") as file:
-    np.save(file, atm_diffraction)
- 
-  print(atm_diffraction.shape)
-  fName = os.path.join("output",
-      "atm_diffraction_Q-{0:.5g}_shape[{1},{2}].dat".format(
-        s_map[s_map.shape[0]//2,-1],
-        atm_diffraction.shape[0], atm_diffraction.shape[1]))
-  with open(fName, "wb") as file:
-    atm_diffraction.astype(np.double).tofile(file)
-
-
-  im = plt.imshow(s_map)
-  plt.colorbar(im)
-  plt.savefig("testS.png")
-  plt.close()
-  im = plt.imshow(s_theta_lf)
-  plt.colorbar(im)
-  plt.savefig("testTH.png")
-  plt.close()
-  im = plt.imshow(s_phi_lf)
-  plt.colorbar(im)
-  plt.savefig("testPH.png")
-  plt.close()
-
-
-
-  # Ensemble smearing
-
-  #smearing_weights = np.array([1])
-  #smearing_ea = np.array([[0,np.pi/2,0]])
-
-  smearing_polar  = np.arange(FLAGS.smear_polar_bins)*np.pi/FLAGS.smear_polar_bins
-  smearing_azim   = np.arange(FLAGS.smear_azim_bins)*2*np.pi/FLAGS.smear_azim_bins
-  smearing_spin   = np.arange(FLAGS.smear_azim_bins)*2*np.pi/FLAGS.smear_azim_bins
-  azim_inds       = np.arange(len(smearing_azim)).astype(int)
-  spin_inds       = np.arange(len(smearing_spin)).astype(int)
-  smearing_ea     = np.zeros(
-      (smearing_polar.shape[0], smearing_azim.shape[0], smearing_spin.shape[0], 3))
-
- 
-  for i in range(FLAGS.smear_polar_bins):
-    smearing_ea[i,:,:,0]  = smearing_azim[i]
-    for k in range(FLAGS.smear_azim_bins):
-      smearing_ea[:,i,k,1] = smearing_polar[i]
-      smearing_ea[i,azim_inds,:,2]  = smearing_spin[azim_inds]
-  smearing_ea       = np.reshape(smearing_ea, (-1,3))
-  smearing_jacobian = np.sin(smearing_ea[:,1])
-
+  if FLAGS.calculation_type == "numerical":
   
-  """  
-  diffraction = make_diffraction(
-      FLAGS, s_map_polar, detector_dist,
-      atom_distances_types, atom_distances_polar,
-      smearing_ea, smearing_jacobian, scat_amps)
+    LMK, bases, norms, times  = get_bases(FLAGS, logging, plot=True)
+    params, bases, times      = apply_fit_parameters(FLAGS, bases, times, logging)
 
-  
-  rand_diff = np.zeros_like(diffraction)
-  for ir, r_diff in enumerate(atom_distances_polar):
-      rand_diff += scat_amps[atom_distances_types[ir][0]](s_map)*scat_amps[atom_distances_types[ir][1]](s_map)*np.sinc(s_map*r_diff[0]/np.pi)
+    # Set up pixel and s maps
+    x,z = x_lab,z_lab
+    zero_mask = pixel_dist > 0
 
-  iind = diffraction.shape[0]//2
-  plt.plot(s_map[iind,:], diffraction[iind,:]/np.amax(diffraction[iind,:]), 'k-')
-  plt.plot(s_map[iind,:], rand_diff[iind,:]/np.amax(rand_diff[iind,:]), 'b-')
-  plt.savefig("testDiffLO.png")
-  plt.close()
-  """
+    signal_xyz_qf = np.concatenate([
+        np.expand_dims(x, axis=-1),
+        np.expand_dims(np.ones_like(x)*FLAGS.beamline_length, axis=-1),
+        np.expand_dims(z, axis=-1)],
+        axis=-1)
 
+    incoming_e      = np.zeros((1,1,3))
+    incoming_e[:,:,1] = k0
+    s_xyz_lf    = k0*signal_xyz_qf/np.expand_dims(np.linalg.norm(signal_xyz_qf, axis=-1), axis=-1) - incoming_e
+    s_map       = np.linalg.norm(s_xyz_lf, axis=-1)
 
-  for tm in range(bases.shape[-1]):
-    """
-    print("weights",bases[:,tm])
-    smearing_weights = np.imag(np.sum(np.expand_dims(bases[:,tm], axis=-1)*sp.special.sph_harm(
-          np.expand_dims(sh_m, axis=-1), np.expand_dims(sh_l, axis=-1),\
-          np.expand_dims(smearing_ea[:,1], axis=0), np.expand_dims(smearing_ea[:,0], axis=0)),
-        axis=0)).astype(np.float64)
-    print("IMAGE", np.sum(np.abs(smearing_weights)))
-    """
-    
-    alignment_diffraction(
-        tm, times, bases,
-        (FLAGS.width_bins, FLAGS.height_bins),
-        detector_dist, s_map_polar,
-        atom_distances_types, atom_distances_polar,
-        smearing_ea, smearing_jacobian, scat_amps)
+    s_map = np.sqrt(x**2 + z**2)
+    s_theta_lf  = np.zeros_like(z)
+    s_theta_lf[zero_mask]  = np.arccos(s_xyz_lf[zero_mask,2]/s_map[zero_mask])
+    s_phi_lf  = np.zeros_like(z)
+    s_phi_lf[zero_mask]  = np.arctan2(s_xyz_lf[zero_mask,1], s_xyz_lf[zero_mask,0])
 
-    """
-    smearing_weights = np.real(np.sum(np.expand_dims(bases[:,tm], axis=-1)\
-        *sp.special.sph_harm(
-          np.expand_dims(sh_m, axis=-1), np.expand_dims(sh_l, axis=-1),\
-          np.expand_dims(smearing_ea[:,1], axis=0), np.expand_dims(smearing_ea[:,0], axis=0)),
-        axis=0)).astype(np.float64)
-    smearing_weights *= smearing_jacobian
+    s_map_polar = np.concatenate([
+        np.expand_dims(s_map, axis=-1),
+        np.expand_dims(s_theta_lf, axis=-1),
+        np.expand_dims(s_phi_lf, axis=-1)],
+        axis=-1)
 
-    diffraction = make_diffraction(
-        FLAGS, s_map_polar, detector_dist,
-        atom_distances_types, atom_distances_polar,
-        smearing_ea, smearing_weights, scat_amps)
+    atm_diffraction = make_atomic_diffraction(
+        (FLAGS.imgBins, FLAGS.imgBins), detector_dist,
+        s_map_polar, atom_types, scat_amps)
 
     # Saving Results
     fName = os.path.join("output",
-        "mol_diffraction_Q-{}_time-{0:.3g}.npy".format(
-          s_map[s_map.shape[0]//2,-1], times[tm]))
+        "atm_diffraction_Q-{0:.5g}.npy".format(s_map[s_map.shape[0]//2,-1]))
     with open(fName, "wb") as file:
-      np.save(file, diffraction)
+      np.save(file, atm_diffraction)
     
+    print(atm_diffraction.shape)
     fName = os.path.join("output",
-        "mol_diffraction_Q-{0}_time-{1:.3g}_shape-{2}-{3}.dat".format(
-          s_map[s_map.shape[0]//2,-1], times[tm],
-          diffraction.shape[0], diffraction.shape[1]))
+        "atm_diffraction_Q-{0:.5g}_shape[{1},{2}].dat".format(
+          s_map[s_map.shape[0]//2,-1],
+          atm_diffraction.shape[0], atm_diffraction.shape[1]))
     with open(fName, "wb") as file:
-      diffraction.astype(np.double).tofile(file)
+      atm_diffraction.astype(np.double).tofile(file)
 
 
-    plc = plt.pcolormesh(s_xyz_lf[:,:,0], s_xyz_lf[:,:,2], diffraction)
-        #vmin=-250000, vmax=250000, cmap='seismic')
-    plt.gca().set_aspect('equal')
-    #im = plt.imshow(diffraction)
-    plt.colorbar(plc)
-    plt.savefig("./plots/molDiffraction_aniso_time-{}.png".format(tm))
-    plt.close()
+    # Ensemble smearing
+    smearing_polar  = np.arange(FLAGS.smear_polar_bins)*np.pi/FLAGS.smear_polar_bins
+    smearing_azim   = np.arange(FLAGS.smear_azim_bins)*2*np.pi/FLAGS.smear_azim_bins
+    smearing_spin   = np.arange(FLAGS.smear_azim_bins)*2*np.pi/FLAGS.smear_azim_bins
+    azim_inds       = np.arange(len(smearing_azim)).astype(int)
+    spin_inds       = np.arange(len(smearing_spin)).astype(int)
+    smearing_ea     = np.zeros(
+        (smearing_polar.shape[0], smearing_azim.shape[0], smearing_spin.shape[0], 3))
+
+   
+    for i in range(FLAGS.smear_polar_bins):
+      smearing_ea[i,:,:,0]  = smearing_azim[i]
+      for k in range(FLAGS.smear_azim_bins):
+        smearing_ea[:,i,k,1] = smearing_polar[i]
+        smearing_ea[i,azim_inds,:,2]  = smearing_spin[azim_inds]
+    smearing_ea       = np.reshape(smearing_ea, (-1,3))
+    smearing_jacobian = np.sin(smearing_ea[:,1])
+
+    for tm in range(bases.shape[-1]):
+      
+      numerical_alignment_diffraction(
+          tm, times, bases,
+          (FLAGS.imgBins, FLAGS.imgBins),
+          detector_dist, s_map_polar,
+          atom_distances_types, atom_distances_polar,
+          smearing_ea, smearing_jacobian, scat_amps)
+
+  elif FLAGS.calculation_type == "analytic":
+    if FLAGS.QperPix is None:
+      logging.fatal("Must specify QperPix for the analytic option.")
+      sys.exit(0)
+
+    LMK, bases, norms, times  = get_bases(FLAGS, logging, plot=True)
+    params, bases, times      = apply_fit_parameters(FLAGS, bases, times, logging)
+
+
+    x,z = np.meshgrid(
+        np.linspace(
+          -1*FLAGS.QperPix*FLAGS.detector_width/2,
+          FLAGS.QperPix*FLAGS.detector_width/2, FLAGS.imgBins),
+        np.linspace(
+          -1*FLAGS.QperPix*FLAGS.detector_height/2,
+          FLAGS.QperPix*FLAGS.detector_height/2, FLAGS.imgBins))
+
+    q = np.sqrt(x**2 + z**2)
+
+
+  elif FLAGS.calculation_type == "azmAvg":
+    q = np.arange(FLAGS.NradAzmBins)*FLAGS.QperPix
+
+    atm_diffraction = np.zeros_like(q)
+    mol_diffraction = np.zeros_like(q)
+    for i,atm in enumerate(atom_types):
+      atm_diffraction += scat_amps[atm](q)**2
+     
+    for i, atmTypes in enumerate(atom_distances_types):
+      mol_diffraction += np.sinc(q*atom_distances_polar[i,0])\
+          *scat_amps[atmTypes[0]](q)*scat_amps[atmTypes[1]](q)
+
+
+    fName_template_dat =\
+        "{0}_sim_{1}Diffraction-lineout_align-random_Qmax-{2:.4g}_Bins[{3}].dat"
+    #fName_template_npy =
+    #    "{0}_sim_{1}Diffraction-lineout_align-random_Qmax-{2:.4g}.npy"
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_dat.format(
+        FLAGS.molName, "atm", q[-1], FLAGS.NradAzmBins))
+    with open(fName, "wb") as file:
+      atm_diffraction.astype(np.double).tofile(file)
     """
-  sys.exit(0)
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_npy.format(
+        FLAGS.molName, "atm", q[-1]))
+    with open(fName, "wb") as file:
+      np.save(file, atm_diffraction)
+    """
+
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_dat.format(
+        FLAGS.molName, "mol", q[-1], FLAGS.NradAzmBins))
+    with open(fName, "wb") as file:
+      mol_diffraction.astype(np.double).tofile(file)
+    """
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_npy.format(
+        FLAGS.molName, "mol", q[-1]))
+    with open(fName, "wb") as file:
+      np.save(file, mol_diffraction)
+    """
+
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_dat.format(
+        FLAGS.molName, "sms", q[-1], FLAGS.NradAzmBins))
+    with open(fName, "wb") as file:
+      (q*mol_diffraction/atm_diffraction).astype(np.double).tofile(file)
+    """
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_npy.format(
+        FLAGS.molName, "sms", q[-1]))
+    with open(fName, "wb") as file:
+      np.save(file, q*mol_diffraction/atm_diffraction)
+    """
+
+
+    fName_template_h5 =\
+        "{0}_sim_diffraction-azmAvg_align-random_Qmax-{1:.4g}.h5"
+    fName = os.path.join(FLAGS.simOutputDir, fName_template_h5.format(
+        FLAGS.molName, q[-1]))
+    with h5py.File(fName, 'w') as hf:#open(fName, "wb") as file:
+      hf.create_dataset("atm_diffraction",  data=atm_diffraction)
+      hf.create_dataset("mol_diffraction",  data=mol_diffraction)
+      hf.create_dataset("sms_diffraction",  data=q*mol_diffraction/atm_diffraction)
 
 
 
@@ -698,6 +559,11 @@ def main(FLAGS):
 
 if __name__ == '__main__':
   FLAGS = setup(parser)
+  if FLAGS.get_parameters:
+    calc_type = FLAGS.calculation_type
+    FLAGS = get_parameters(FLAGS.run)
+    FLAGS.calculation_type = calc_type
+
   main(FLAGS)
   
 
