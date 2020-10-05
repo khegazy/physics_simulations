@@ -2,10 +2,10 @@
 #include "simulationTools/moleculeClass.h"
 #include "simulationTools/molEnsembleMC.h"
 #include "simulationTools/diffractionClass.h"
-#include "../../tools/imageProcessing.h"
-#include "../../tools/saveClass.h"
-#include "../../tools/plotClass.h"
-#include "../../tools/parameters.h"
+#include "simulationTools/saveClass.h"
+#include "../../baseTools/tools/imageProcessing.h"
+#include "../../baseTools/tools/plotClass.h"
+#include "../../baseTools/tools/parameters.h"
 
 
 int main(int argc, char* argv[]) {
