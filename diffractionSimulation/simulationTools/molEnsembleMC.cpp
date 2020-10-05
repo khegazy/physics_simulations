@@ -64,6 +64,7 @@ void MOLENSEMBLEMCclass::initialize() {
 void MOLENSEMBLEMCclass::importXYZfile(std::string fileName) {
 
   NmolAtoms = -1;
+  cout<<"FILENAME "<<fileName<<endl;
   ifstream XYZ(fileName.c_str());
   std::string str;
 
@@ -77,6 +78,7 @@ void MOLENSEMBLEMCclass::importXYZfile(std::string fileName) {
     curAtomPos.clear();
 
     // Number of atoms
+    cout<<"TEST N "<<str<<"  "<<NmolAtoms<<endl;
     int curNmolAtoms = stoi(str);
     if (NmolAtoms == -1) {
       NmolAtoms = curNmolAtoms;
@@ -168,6 +170,7 @@ ATOMS MOLENSEMBLEMCclass::getATOMtype(std::string atm) {
   if (atm.compare("C") == 0)      return C;
   if (atm.compare("N") == 0)      return N;
   if (atm.compare("O") == 0)      return O;
+  if (atm.compare("S") == 0)      return S;
   else {
     cerr << "ERROR: Cannot find atom type (" << atm << ")!!!\n";
     exit(0);

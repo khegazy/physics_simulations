@@ -6,8 +6,8 @@
 #include <vector>
 #include <string>
 
-#include "../../../tools/constants.h"
-#include "../../../tools/tools.h"
+#include "../../../baseTools/tools/constants.h"
+#include "../../../baseTools/tools/tools.h"
 
 using namespace std;
 
@@ -16,8 +16,8 @@ using namespace std;
 //  must be changed per expirement   //
 ///////////////////////////////////////
 
-enum ATOMS {H,C,N,O,I,NUMBER_ATOMS};
-static string atomNames[NUMBER_ATOMS] = {"hydrogen","carbon","nitrogen","oxygen","iodine"};
+enum ATOMS {H,C,N,O,I,S,NUMBER_ATOMS};
+static string atomNames[NUMBER_ATOMS] = {"hydrogen","carbon","nitrogen","oxygen","iodine","sulfur"};
 
 
 /////////////////////////////////////////////////

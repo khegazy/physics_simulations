@@ -20,9 +20,9 @@
 #include <opencv2/contrib/contrib.hpp>
 
 //Home Grown
-#include "../../../tools/tools.h"
-#include "../../../tools/constants.h"
-#include "../../../tools/plotClass.h"
+#include "../../../baseTools/tools/tools.h"
+#include "../../../baseTools/tools/constants.h"
+#include "../../../baseTools/tools/plotClass.h"
 #include "atomClass.h"
 #include "moleculeClass.h"
 #include "pdfClass.h"

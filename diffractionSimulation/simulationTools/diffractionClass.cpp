@@ -108,6 +108,7 @@ void DIFFRACTIONclass::importScatteringAmps(std::string scatAmpPath) {
   scatSInterp.resize(20000);
 
   filename = scatAmpPath+"/"+"interpolationAngs.dat";
+  cout<<"LOOKING "<<filename<<endl;
   ifstream angFile(filename.c_str());
   int ind = 0;
   while ( getline(angFile,line) ) {

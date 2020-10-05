@@ -12,11 +12,11 @@
 #include <vector>
 #include <stdlib.h>
 
-#include "constants.h"
-#include "../../simulation/diffractionSimulation/simulationTools/atomClass.h"
-#include "../../simulation/diffractionSimulation/simulationTools/moleculeClass.h"
-#include "../simulation/diffractionSimulation/simulationTools/pdfClass.h"
-#include "../simulation/diffractionSimulation/simulationTools/diffractionClass.h"
+#include "../../../baseTools/tools/constants.h"
+#include "atomClass.h"
+#include "moleculeClass.h"
+#include "pdfClass.h"
+#include "diffractionClass.h"
 
 using namespace std;
 
