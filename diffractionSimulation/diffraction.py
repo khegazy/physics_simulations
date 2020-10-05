@@ -502,6 +502,7 @@ def main(FLAGS):
       atm_diffraction += scat_amps[atm](q)**2
      
     for i, atmTypes in enumerate(atom_distances_types):
+      print(atmTypes[0], atmTypes[1], atom_distances_polar[i,0])
       mol_diffraction += np.sinc(q*atom_distances_polar[i,0])\
           *scat_amps[atmTypes[0]](q)*scat_amps[atmTypes[1]](q)
 
@@ -554,7 +555,15 @@ def main(FLAGS):
       hf.create_dataset("sms_diffraction",  data=q*mol_diffraction/atm_diffraction)
 
 
-
+    # Plot Results
+    fig, ax = plt.subplots(1, 2, figsize=(12,5))
+    ax[0].plot(q, atm_diffraction)
+    ax[0].plot(q, mol_diffraction)
+    ax[1].plot(q, q*mol_diffraction/atm_diffraction)
+    ax[0].set_xlim([0, q[-1]])
+    ax[1].set_xlim([0, q[-1]])
+    fig.savefig(os.path.join("./plots",
+        "{}_sim-diffraction-azmAvg.png".format(FLAGS.molName)))
 
 
 if __name__ == '__main__':
