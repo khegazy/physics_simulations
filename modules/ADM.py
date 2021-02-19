@@ -15,9 +15,11 @@ def get_bases(FLAGS, logging, normalize=False, plot=False):
     start_time, end_time = None, None
     files = "{}/*.dat".format(FLAGS.basis_folder)
     print("files", files)
+    print("res", glob.glob(files))
     for fl in glob.glob(files):
       logging.info("Importing Bases: " + fl)
       L = int(fl[fl.find("_L-")+3:fl.find("_M-")])
+      print(fl)
       with open(fl, "rb") as file:
         bases[L] = np.fromfile(file, np.double)
 
@@ -113,10 +115,10 @@ def get_bases(FLAGS, logging, normalize=False, plot=False):
       plt.close()
 
 
-  if FLAGS.smear_time is not None:
+  if FLAGS.probe_FWHM is not None:
     delta_time = times[1] - times[0]
     bases = gaussian_filter1d(
-        bases, FLAGS.smear_time/delta_time, axis=-1)
+        bases, FLAGS.probe_FWHM/delta_time, axis=-1)
 
 
   if plot:
