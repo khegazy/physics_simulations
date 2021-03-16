@@ -57,7 +57,7 @@ def get_bases(params, logging=None, normalize=False, plot=False):
     setBases = None
   """
 
-  if params.molName == "N2O":
+  if params.molecule == "N2O":
     start_time, end_time = None, None
     files = "{}/*.dat".format(params.basis_folder)
     print("files", files)
@@ -117,7 +117,7 @@ def get_bases(params, logging=None, normalize=False, plot=False):
     times = start_time + np.linspace(0, 1, tLen)*(end_time - start_time)
     print("TIMES", times[0], times[-1])
 
-  elif params.molName == "NO2":
+  elif params.molecule == "NO2":
     L_list = []
     M_dict = defaultdict(list)
     files = "{}/*.npy".format(params.basis_folder)
@@ -129,7 +129,6 @@ def get_bases(params, logging=None, normalize=False, plot=False):
       ln = len(D) + len(D)%2
       L = int(D[:ln//2])
       M = int(D[ln//2:])
-      print(D,L,M)
       if L not in L_list:
         L_list.append(L)
       M_dict[L].append(M)
@@ -170,7 +169,6 @@ def get_bases(params, logging=None, normalize=False, plot=False):
 
   elif params.input_LMK is not None:
     basisList = []
-    print("WAT", params.input_LMK)
     for i in range(len(params.input_LMK)):
       LMK.append(params.input_LMK[i,:])
       basisList.append(np.ones((1,1)))
@@ -203,14 +201,14 @@ def get_bases(params, logging=None, normalize=False, plot=False):
         plt.close()
 
     if params.probe_FWHM is not None:
-      print("INTERPING")
       delta_time = times[1] - times[0]
       bases = gaussian_filter1d(
           bases, (0.001*params.probe_FWHM/2.355)/delta_time, axis=-1)
 
     # Select evaluation times 
     bases_interp = interp1d(times, bases, axis=-1, kind='cubic')
-    times = params.sim_eval_times
+    if params.sim_eval_times is not None:
+      times = params.sim_eval_times
     bases = bases_interp(times)
 
     if plot:
@@ -221,7 +219,6 @@ def get_bases(params, logging=None, normalize=False, plot=False):
             L, M, K)))
         plt.close()
 
-  print("BASIS LMK", LMK)
   return np.array(LMK), bases, [], times
 
 

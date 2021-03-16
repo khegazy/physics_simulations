@@ -31,7 +31,7 @@ parser.add_argument(
     help='Run name.'
 )
 parser.add_argument(
-    '--time', type=float, default=None,
+    '--eval_time', type=float, default=None,
     help='Time at which to simulate the diffraction pattern.'
 )
 parser.add_argument(
@@ -156,7 +156,6 @@ def get_scattering_amplitudes(params, atom_types):
 
       angStr = []
       sctStr = []
-      print("WTF",params.scat_amps_dir, atm)
       fName = os.path.join(params.scat_amps_dir, atom_names[atm] + "_dcs.dat")
       print(fName)
       with open(fName, 'r') as inpFile:
@@ -545,7 +544,7 @@ def make_diffraction(
 
 
 def diffraction_calculation_numerical(
-    molName, itm, times, LMK, bases,
+    molecule, itm, times, LMK, bases,
     detector_shape, detector_dist, q_map_polar,
     atom_types, atom_distances_polar,
     smearing_ea, smearing_jacobian, scat_amps, logging=None):
@@ -562,11 +561,11 @@ def diffraction_calculation_numerical(
 
  
   """
-  if molName == "N2O":
+  if molecule == "N2O":
     print("NORMING")
     smearing_weights = 2*np.pi**2*np.conj(smearing_weights)\
         /(4*np.pi/(2*lmk[0] + 1)
-  elif molName == "NO2":
+  elif molecule == "NO2":
     smearing_weights /= np.power(np.sqrt(4*np.pi/(2*lmk[0] + 1)), 1.5)
   """
 
@@ -785,11 +784,13 @@ def main(FLAGS, params):
 
       # Atomic diffraction
       for i,atm in enumerate(atom_types[imol]):
-        atm_diffractions[imol] += scat_amps[atm](q)**2
+        print("ATM T: ",atm)
+        atm_diffractions[imol] += np.abs(scat_amps[atm](q))**2
   
       # Molecular diffraction
+      print("SIZE: ",atom_distances_polar[0].shape)
       if atom_distances_polar[imol] is not None:
-        sincs = np.pi*np.sum(
+        sincs = np.sum(
             np.sinc((q/np.pi)\
               *np.expand_dims(atom_distances_polar[imol][:,:,0], -1)),
             axis=0)
@@ -808,17 +809,17 @@ def main(FLAGS, params):
     fName_template_dat =\
         "{0}_sim_{1}Diffraction-azmAvg_Qmax-{2:.4g}_Bins[{3}].dat"
     fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molName, "atm", q[-1], params.NradAzmBins))
+        params.molecule, "atm", q[-1], params.NradAzmBins))
     with open(fName, "wb") as file:
       atm_diffraction.astype(np.double).tofile(file)
 
     fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molName, "mol", q[-1], params.NradAzmBins))
+        params.molecule, "mol", q[-1], params.NradAzmBins))
     with open(fName, "wb") as file:
       mol_diffraction.astype(np.double).tofile(file)
 
     fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molName, "sms", q[-1], params.NradAzmBins))
+        params.molecule, "sms", q[-1], params.NradAzmBins))
     with open(fName, "wb") as file:
       (q*mol_diffraction/atm_diffraction).astype(np.double).tofile(file)
 
@@ -826,19 +827,19 @@ def main(FLAGS, params):
     if len(mol_diffractions) > 1:
       for imol in range(len(mol_diffractions)):
         fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molName+"_mol{}".format(imol), 
+            params.molecule+"_mol{}".format(imol), 
             "atm", q[-1], params.NradAzmBins))
         with open(fName, "wb") as file:
           atm_diffractions[imol].astype(np.double).tofile(file)
 
         fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molName+"_mol{}".format(imol),
+            params.molecule+"_mol{}".format(imol),
             "mol", q[-1], params.NradAzmBins))
         with open(fName, "wb") as file:
           mol_diffractions[imol].astype(np.double).tofile(file)
 
         fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molName+"_mol{}".format(imol),
+            params.molecule+"_mol{}".format(imol),
             "sms", q[-1], params.NradAzmBins))
         with open(fName, "wb") as file:
           (q*mol_diffraction[imol]/atm_diffraction[imol]).astype(np.double).tofile(file)
@@ -848,7 +849,7 @@ def main(FLAGS, params):
     fName_template_h5 =\
         "{0}_sim_diffraction-azmAvg_Qmax-{1:.4g}.h5"
     fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-        params.molName, q_map[params.imgBins//2,-1]))
+        params.molecule, q_map[params.imgBins//2,-1]))
     with h5py.File(fName, 'w') as hf:
       hf.create_dataset("q",  data=q)
       hf.create_dataset("atm_diffraction",  data=atm_diffraction)
@@ -865,7 +866,7 @@ def main(FLAGS, params):
     ax[0].set_xlim([0, q[-1]])
     ax[1].set_xlim([0, q[-1]])
     fig.savefig(os.path.join("./plots",
-        "{}_sim-diffraction-azmAvg.png".format(params.molName)))
+        "{}_sim-diffraction-azmAvg.png".format(params.molecule)))
     """
 
   else:
@@ -1027,7 +1028,7 @@ def main(FLAGS, params):
             continue
 
         mol_diffraction, mol_diffraction_raw = diffraction_calculation_numerical(
-            params.molName, tm, times, LMK, bases.astype(np.float32),
+            params.molecule, tm, times, LMK, bases.astype(np.float32),
             (params.imgBins, params.imgBins),
             detector_dist, q_map_polar,
             atom_distances_types, atom_distances_polar,
@@ -1044,7 +1045,7 @@ def main(FLAGS, params):
         fName_template_h5 =\
             "{0}_sim_diffraction-numeric_Qmax-{1:.4g}{2}"
         fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-            params.molName, q_map[params.imgBins//2,-1],
+            params.molecule, q_map[params.imgBins//2,-1],
             "_time-{0:.6g}".format(times[tm])))
         if params.input_LMK is not None:
           suffix = "_LMK"
@@ -1066,9 +1067,8 @@ def main(FLAGS, params):
         logging.fatal("Must specify QperPix for the analytic option.")
         sys.exit(0)
     
-      #if params.molName == "N2O":
+      #if params.molecule == "N2O":
       #  bases *= np.expand_dims(np.sqrt(4*np.pi/(2*LMK[:,0] + 1)), -1)**2
-      print("BS", bases.shape)
       for tm in range(bases.shape[-1]):
         if FLAGS.time_ind is not None:
           if tm != FLAGS.time_ind:
@@ -1086,7 +1086,7 @@ def main(FLAGS, params):
         fName_template_h5 =\
             "{0}_sim_diffraction-analytic_Qmax-{1:.4g}{2}"
         fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-            params.molName, q_map[params.imgBins//2,-1],
+            params.molecule, q_map[params.imgBins//2,-1],
             "_time-{0:.6g}".format(times[tm])))
         if params.input_LMK is not None:
           suffix = "_LMK"
@@ -1111,6 +1111,8 @@ if __name__ == '__main__':
     params = get_parameters(FLAGS.run, FLAGS.molecule)
   else:
     params = get_parameters(FLAGS.run)
+  if FLAGS.molecule is not None:
+    params.molecule = FLAGS.molecule
   FLAGS = setup(parser, output_dir=params.simOutputDir)
 
   # Flag handling
@@ -1131,6 +1133,10 @@ if __name__ == '__main__':
       FLAGS.time_ind = None
     else:
       FLAGS.time_ind = int(FLAGS.time_ind)
+  if FLAGS.eval_time is not None:
+    params.sim_eval_times = np.array([float(FLAGS.eval_time)])
+    FLAGS.time_ind = 0
+
   params.imgBins = 2*params.NradAzmBins - 1 
   
   if params.calculation_type != "azmAvg":
