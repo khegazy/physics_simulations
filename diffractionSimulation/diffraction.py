@@ -406,12 +406,13 @@ def main(params, on_cluster=False, time_ind=False):
             raise RuntimeError("Cannot smear an ensemble of molecules from"\
                 + "an xyz file, remove 'smear_std_ratio' from parameters")
           std_steps = np.linspace(-5, 5, 101)
-          len_ratios = np.expand_dims(std_steps, -1)*params["smear_std_ratio"] + 1
+          new_lens  = atom_distances_polar[imol][:,:,0]\
+              + np.expand_dims(std_steps, -1)*params["smear_std_ratio"]\
+              *np.sqrt(atom_distances_polar[imol][:,:,0])
           weights = np.exp(-0.5*std_steps**2)
           weights /= np.sum(weights)
           sincs = np.sum(np.reshape(weights, (-1, 1, 1))\
-              *np.sinc((q/np.pi)\
-                *np.expand_dims(len_ratios*atom_distances_polar[imol][:,:,0], -1)),
+              *np.sinc((q/np.pi)*np.expand_dims(new_lens, -1)),
               axis=0)
         for itp in range(len(atom_distances_types[imol])):
           mol_diffractions[imol] += sincs[itp]\
