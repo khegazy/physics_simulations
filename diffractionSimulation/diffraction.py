@@ -1,4 +1,5 @@
 import sys, os, glob
+import inspect
 import logging
 import argparse
 import pickle as pl
@@ -13,6 +14,9 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.special import factorial, jacobi
 from multiprocessing import Pool
 from functools import partial
+
+from modules.diffraction_simulation import diffraction_calculation_numeric, atomic_diffraction_calculation
+from modules.diffraction_simulation import molecular_diffraction_calculation as diffraction_calculation_analytic
 
 sys.path.append("./")
 sys.path.append("../../")
@@ -49,6 +53,10 @@ parser.add_argument(
 parser.add_argument(
     '--basis_folder', default=None, type=str,
     help='Folder containing the time bases'
+)
+parser.add_argument(
+    '--output_folder', default=None, type=str,
+    help='Folder for output file'
 )
 parser.add_argument(
     '--output_fileName_suffix', default=None, type=str,
@@ -156,7 +164,7 @@ def get_scattering_amplitudes(params, atom_types):
 
       angStr = []
       sctStr = []
-      fName = os.path.join(params.scat_amps_dir, atom_names[atm] + "_dcs.dat")
+      fName = os.path.join(params["scat_amps_dir"], atom_names[atm] + "_dcs.dat")
       print(fName)
       with open(fName, 'r') as inpFile:
         ind=0
@@ -182,7 +190,7 @@ def calculate_deBroglie_wavelength(params):
   eV_to_au = 0.0367493
   angs_to_au = 1e-10/5.291772108e-11
   db_lambda = 2*np.pi*C_AU/\
-    np.sqrt((params.elEnergy*eV_to_au + C_AU**2)**2\
+    np.sqrt((params["elEnergy"]*eV_to_au + C_AU**2)**2\
     - (C_AU)**4) #au
   db_lambda /= angs_to_au
   
@@ -190,48 +198,6 @@ def calculate_deBroglie_wavelength(params):
   #return 0.00296622 #angs
 
 
-"""
-def get_molecule_distances(params, logging):
-  fName = os.path.join(params.xyzDir, params.xyz_file)
-  if not os.path.exists(fName):
-    logging.fatal("Cannot find xyz file: " + fName)
-    sys.exit(0)
-  
-  atom_types      = []
-  atom_positions  = []
-  with open(fName) as file:
-    for i,ln in enumerate(file):
-      if i == 0:
-        Natoms = int(ln)
-      elif i > 1:
-        vals = ln.split()
-        atom_types.append(vals[0])
-        pos = [float(x) for x in vals[1:]]
-        atom_positions.append(np.array([pos]))
-
-  atom_positions = np.concatenate(atom_positions, axis=0)
-
-  atom_distances_xyz    = []
-  atom_distances_polar  = []
-  atom_distances_types  = []
-  for i,d1 in enumerate(atom_positions):
-    for j,d2 in enumerate(atom_positions):
-      if i == j:
-        continue
-      diff = d1-d2
-      atom_distances_xyz.append(np.array([diff]))
-      dist  = np.linalg.norm(diff)
-      polar = np.arccos(diff[2]/dist)
-      azim  = np.arctan2(diff[1], diff[0])
-      atom_distances_polar.append(np.array([[dist, polar, azim]]))
-      atom_distances_types.append([atom_types[i], atom_types[j]])
-  atom_distances_xyz = np.concatenate(atom_distances_xyz, axis=0)
-  atom_distances_polar = np.concatenate(atom_distances_polar, axis=0)
-  
-  return atom_types, atom_positions,\
-      atom_distances_xyz, atom_distances_polar, atom_distances_types
-"""
-
 def get_molecule_distances(params, logging):
   
   atom_types      = []
@@ -240,11 +206,11 @@ def get_molecule_distances(params, logging):
   atom_distances_polar  = []
   atom_distances_types  = []
 
-  if not isinstance(params.xyz_file, list):
-    params.xyz_file = [params.xyz_file]
+  if not isinstance(params["xyz_file"], list):
+    params["xyz_file"] = [params["xyz_file"]]
 
-  for xyz_name in params.xyz_file:
-    fName = os.path.join(params.xyzDir, xyz_name)
+  for xyz_name in params["xyz_file"]:
+    fName = os.path.join(params["xyz_dir"], xyz_name)
     print("Looking at file " + fName)
     if not os.path.exists(fName):
       logging.fatal("Cannot find xyz file: " + fName)
@@ -276,6 +242,8 @@ def get_molecule_distances(params, logging):
           cur_atom.append(np.array(pos))
           if fill_atom_types:
             atom_types[-1].append(vals[0])
+      if len(cur_atom) != Natoms:
+        raise RuntimeError("The number of atoms does not match the retrieved atoms!!!\n")
       atom_positions[-1].append(np.array(cur_atom))
 
 
@@ -312,370 +280,9 @@ def get_molecule_distances(params, logging):
       atom_distances_xyz, atom_distances_polar, atom_distances_types
 
 
-def get_wignerD_comparison(phi_ea, theta_ea, chi_ea, l, m):
-  lmm = np.ones((2*l+1, 3))*l
-  lmm[:,1] -= np.arange(2*l+1)
-  lmm[:,2] = m
-  lmm = lmm.astype(int)
-
-  D_ME = sf.Wigner_D_element(phi_ea, theta_ea, chi_ea, lmm)
-  return D_ME, lmm
 
 
-def small_factorial(start, end):
-  start = np.max(start, 1)
-  return np.prod(np.arange(start, end+1))
-
-def nCk(n, k):
-  return small_factorial(k,n)/small_factorial(1, n-k+1)
-
-def nCk_np(n, k):
-  return factorial(n)/(factorial(k)*factorial(n-k))
-
-def Ylm_calc(m, l, azim, polar):
-  return sp.special.sph_harm(m, l, azim, polar, dtype=np.complex64)
-  #return np.abs(-1)**np.abs(m)*sp.special.sph_harm(m, l, azim, polar, dtype=np.complex64)
-
-def get_wignerD_3d(phi_ea, theta_ea, chi_ea, l, m, k):
-  # Return array of D matrices with L, M, K as l, [-l, l], m
-  # Calculation based off of below derivation
-  # https://en.wikipedia.org/wiki/Wigner_D-matrix#Wigner_(small)_d-matrix
-
-  m = np.expand_dims(m, 0)
-  phi_ea    = np.expand_dims(phi_ea, axis=-1)
-  theta_ea  = np.expand_dims(theta_ea, axis=-1)
-  chi_ea    = np.expand_dims(chi_ea, axis=-1)
-
-  k_array = np.array([l+k, l-k, l, l], dtype=int)
-  k_matrix = np.tile(np.expand_dims(k_array, -1), m.shape[1])
-
-  k_matrix[2,:] += m[0]
-  k_matrix[3,:] -= m[0]
-
-  a_array = np.array([-1*k, k, k, -1*k])
-  a_matrix = np.tile(np.expand_dims(a_array, -1), m.shape[1])
-  a_matrix += np.array([[1,-1,-1,1]]).transpose()*m
-
-  k_inds = np.argmin(k_matrix, axis=0)
-  k_, a = np.zeros_like(m), np.zeros_like(m)
-  ii = np.arange(k_inds.shape[0])
-  k_[0,:] = k_matrix[k_inds[ii],ii]
-  a[0,:] = a_matrix[k_inds[ii],ii]
-  b = 2*l - 2*k_ - a
-  lmbd = (m - k)*np.maximum(0, (1-(k_inds%3)))
-  #lmbd = np.maximum(0, (m - k))
-  #print(lmbd, (m-k), (1-(k_inds%3)), k_inds)
-  #print("ll",lmbd)
-
-
-  # Calculate little d
-  d_coeff = (-1)**lmbd*np.sqrt(nCk_np(2*l-k_, k_+a))/np.sqrt(nCk_np(k_+b, b))\
-      *np.sin(theta_ea/2)**a*np.cos(theta_ea/2)**b
-  d = np.zeros_like(d_coeff)
-  cos_theta = np.cos(theta_ea)
-  jac = []
-  for im in range(m.shape[-1]):
-    p = jacobi(k_[0,im], a[0,im], b[0,im])
-    jac.append(np.polyval(p, cos_theta)[:,0])
-    d[:,im] = d_coeff[:,im]*np.polyval(p, cos_theta)[:,0]
-
-  #print("d", d)
-  #print("jac", jac)
-  #print("l", lmbd)
-  #print("mmmmmmmmmmm", m, np.complex(0,-1))
-  #print("phi", phi_ea)
-  #print("res",np.exp(np.complex(0,-1)*m*phi_ea))
-  # Calculate D matrix element
-  D_ME = np.exp(np.complex(0,-1)*m*phi_ea)*d*np.exp(np.complex(0,-1)*k*chi_ea)
-  #D_ME = d*(np.cos(-1*m*phi_ea) + np.cos(-1*k*chi_ea)\
-  #    + np.complex(0,1)*(np.sin(-1*m*phi_ea) + np.sin(-1*k*chi_ea)))
-  #print("WTF", np.sin(-1*m*phi_ea))
-  #print(-1*m*phi_ea)
-
-  return D_ME.transpose().astype(np.complex64)
-
-def rotate_Ylm_3d(phi_ea, theta_ea, chi_ea, l, m, polar, azim):
-  m_sum = np.ones(2*l+1)*l - np.arange(2*l+1)
-  m_sum = m_sum.astype(np.int16)
-  #m_sum = np.ones((1, 2*l+1), dtype=np.int16)
-  #m_sum[0,:] = np.ones(2*l+1)*l - np.arange(2*l+1, dtype=np.int16)
-  D_ME = get_wignerD_3d(phi_ea, theta_ea, chi_ea, l, m_sum, m)
-
-  """
-  print("D SIZE", D_ME.shape)
-  print(D_ME)
-  """
-  Ylms = Ylm_calc(
-    np.expand_dims(np.expand_dims(m_sum, -1), -1),
-    np.ones((m_sum.shape[0], 1, 1))*l,
-    np.expand_dims(azim,0),        
-    np.expand_dims(polar,0))
-
-  return np.einsum('ia,ibc->abc', D_ME, Ylms)
-  #return np.sum(
-  #    np.expand_dims(np.expand_dims(D_ME, -1), -1)\
-  #    *np.expand_dims(Ylms, 1), axis=0)
-
-
-def make_atomic_diffraction(
-    detector_shape, detector_dist, q_map_polar,
-    atom_types, scat_amps):
-
-  diffraction = np.zeros((int(detector_shape[0]), int(detector_shape[1])))
-  for imol in range(len(atom_types)):
-    for atm in atom_types[imol]:
-      diffraction += (1/detector_dist**2)\
-          *scat_amps[atm](q_map_polar[:,:,0])**2
-  
-  return diffraction
-
-
-def make_diffraction(
-    detector_shape, detector_dist, q_map_polar,
-    atom_types, atom_distances_polar,
-    smearing_ea, smearing_weights,
-    scat_amps, logging=None):
-
-  n = 4000
-  N_points = smearing_weights.shape[0]
-  """
-  plt.plot(np.cos(smearing_ea[:,1]), smearing_weights)
-  plt.savefig("testw.png")
-  plt.close()
-  """
-  smearing_weights = np.expand_dims(np.expand_dims(smearing_weights, -1), -1)
-  diffraction = np.zeros((int(detector_shape[0]), int(detector_shape[1])),
-      dtype=np.complex)
-
-  #####  Loop over smearing points  #####
-  for imol in range(len(atom_distances_polar)):
-    for igeo in range(len(atom_distances_polar[imol])):
-      lc,hc = 0,np.min([n, N_points])
-      while hc < N_points or lc == 0:
-        if logging is not None:
-          logging.info("Evaluating range {} - {} of {}".format(lc, hc, N_points))
-        else:
-          print("Evaluating range {} - {} of {}".format(lc, hc, N_points))
-
-        ###  Loop over all pairwise distances  #####
-        for ir, r_diff in enumerate(atom_distances_polar[imol][igeo]):
-          """
-          rr = 40
-          cent = int(detector_shape[1]/2)
-          print(cent, smearing_ea[lc:hc,1].shape)
-          irr = (rr*np.cos(smearing_ea[lc:hc,1])).astype(int) + cent
-          icc = (rr*np.cos(smearing_ea[lc:hc,0])).astype(int) + cent
-          print("WEIGHT SH", smearing_weights.shape)
-          diffraction[irr,icc] += smearing_weights[lc:hc,0,0]
-          continue
-          """
-
-          # Rotate Y10 so it points in direction of r in lf
-          #D_ME_, lmm = get_wignerD(r_diff[2], r_diff[1], 0, 1, 0)
-          l = 1
-          m_sum = np.ones(3) - np.flip(np.arange(3))
-          m_sum = m_sum.astype(np.int16)
-          D_ME = get_wignerD_3d(
-              np.array([r_diff[2]]), np.array([r_diff[1]]), np.zeros(1),
-              1, m_sum, 0)
-          #    np.array([r_diff[2]]), np.array([r_diff[1]]), np.zeros(1), 1, 0)
-          D_ME = D_ME[:,0]
-
-          q_dot_r = np.zeros(
-              (hc - lc, q_map_polar.shape[0], q_map_polar.shape[1]),
-              dtype=np.complex64)
-          for im, m in enumerate(m_sum):
-            if logging is not None:
-              logging.info("\tir / m: {} / {}".format(ir, m))
-            else:
-              print("\tir / m: {} / {}".format(ir, m))
-
-            if np.abs(D_ME[im]) <= 1e-10:
-              print("skipping")
-              continue
-
-            """
-            rr,cc = 3,4
-            Nb = 10
-            tst = rotate_Ylm_3d(
-              smearing_ea[:Nb,0], smearing_ea[:Nb,1], smearing_ea[:Nb,2],\
-                  l, m, q_map_polar[:,:,1], q_map_polar[:,:,2])
-            print("VAR", np.sum(np.abs(tst - np.mean(tst,axis=0,keepdims=True))**2))
-            """
-
-            q_dot_r +=  D_ME[im]*(q_map_polar[:,:,0]*r_diff[0]/(0.5*np.sqrt(3/np.pi)))\
-                  *rotate_Ylm_3d(
-                      smearing_ea[lc:hc,0], smearing_ea[lc:hc,1], smearing_ea[lc:hc,2],\
-                      l, m, q_map_polar[:,:,1], q_map_polar[:,:,2])
-
-          #print("QDR", np.amax(np.real(q_dot_r)), np.amax(np.imag(q_dot_r)))
-          diffraction +=\
-              scat_amps[atom_types[imol][ir][0]](q_map_polar[:,:,0])\
-              *scat_amps[atom_types[imol][ir][1]](q_map_polar[:,:,0])/(detector_dist**2)\
-              *np.sum(smearing_weights[lc:hc]*np.cos(np.real(q_dot_r)), axis=0)
-          #diffraction +=\
-          #    scat_amps[atom_types[ir][0]](q_map_polar[:,:,0])\
-          #    *scat_amps[atom_types[ir][1]](q_map_polar[:,:,0])/(detector_dist**2)\
-          #    *np.real(np.sum(smearing_weights[lc:hc]*np.cos(q_dot_r), axis=0))
-          #    #*np.sum(smearing_weights[lc:hc]*np.cos(np.real(q_dot_r)), axis=0)
-        lc = hc
-        hc = np.min([hc+n, N_points])
-
-        """
-          diffraction +=\
-              scat_amps[atom_types[ir][0]](q_map_polar[:,:,0])\
-              *scat_amps[atom_types[ir][1]](q_map_polar[:,:,0])/(detector_dist**2)\
-              *np.sum(smearing_weights*np.cos(
-                np.real(D_ME[im]*(q_map_polar[:,:,0]*r_diff[0]/(0.5*np.sqrt(3/np.pi)))\
-                *rotate_Ylm_3d(smearing_ea[:,0], smearing_ea[:,1], smearing_ea[:,2],\
-                  l, m, q_map_polar[:,:,1], q_map_polar[:,:,2]))),
-                axis=0)
-        """
-        """
-          q_dot_r_lf = np.real(D_ME[im]*(q_map_polar[:,:,0]*r_diff[0]/(0.5*np.sqrt(3/np.pi)))\
-              *rotate_Ylm_3d(smearing_ea[:,0], smearing_ea[:,1], smearing_ea[:,2],\
-                l, m, q_map_polar[:,:,1], q_map_polar[:,:,2]))
-          smearing = np.sum(smearing_weights*np.cos(q_dot_r_lf), axis=0)
-          diffraction += smearing*scat_amps[atom_types[ir][0]](q_map_polar[:,:,0])\
-              *scat_amps[atom_types[ir][1]](q_map_polar[:,:,0])/(detector_dist**2)
-        """
-  
-  return np.real(diffraction), diffraction
-
-
-def diffraction_calculation_numerical(
-    molecule, itm, times, LMK, bases,
-    detector_shape, detector_dist, q_map_polar,
-    atom_types, atom_distances_polar,
-    smearing_ea, smearing_jacobian, scat_amps, logging=None):
-
-  smearing_weights = []
-  for lmk in LMK:
-    smearing_weights.append(
-        ((2*lmk[0] + 1)/(8*np.pi**2))*get_wignerD_3d(
-          smearing_ea[:,0],
-          smearing_ea[:,1],
-          smearing_ea[:,2],
-          lmk[0], np.array([lmk[1]]), lmk[2]))
-    #smearing_weights[-1] /= np.sqrt(4*np.pi/(2*lmk[0] + 1))
-
- 
-  """
-  if molecule == "N2O":
-    print("NORMING")
-    smearing_weights = 2*np.pi**2*np.conj(smearing_weights)\
-        /(4*np.pi/(2*lmk[0] + 1)
-  elif molecule == "NO2":
-    smearing_weights /= np.power(np.sqrt(4*np.pi/(2*lmk[0] + 1)), 1.5)
-  """
-
-  norm = np.sqrt(4*np.pi/(2*LMK[:,0] + 1))
-  #smearing_weights = np.real(np.sum(
-  smearing_weights = np.sum(
-      np.expand_dims(norm*bases[:,itm], axis=-1)\
-        *np.concatenate(smearing_weights, axis=0),
-      axis=0)#.astype(np.float32)
-
-  smearing_weights *= smearing_jacobian
-  
-  """
-  print(smearing_ea.shape, smearing_weights.shape)
-  for ang,w in zip(smearing_ea, smearing_weights):
-    print(ang, w)
-  """
- 
-  return make_diffraction(
-      detector_shape, detector_dist, q_map_polar,
-      atom_types, atom_distances_polar,
-      smearing_ea, smearing_weights, scat_amps, logging)
-
-def calc_dists(R):
-  r     = np.expand_dims(R, 0) - np.expand_dims(R, 1)
-  dR    = np.sqrt(np.sum(r**2, axis=-1))
-  theta = np.arccos(r[:,:,2]/(dR + 1e-20))
-  phi   = np.arctan2(r[:,:,1], r[:,:,0])
-  mask = np.expand_dims((dR[:,:] > 0) , -1)
-
-  return mask*np.concatenate([np.expand_dims(dR,-1),\
-    np.expand_dims(theta, -1),\
-    np.expand_dims(phi, -1)], axis=-1)
-
-
-def diffraction_calculation_analytical(
-    itm, times, LMK, bases,
-    q_map, R, atom_types, scat_amps,
-    detector_dist):
-
-  L = np.reshape(LMK[:,0], (-1, 1, 1, 1))
-  M = np.reshape(LMK[:,1], (-1, 1, 1, 1))
-  K = np.reshape(LMK[:,2], (-1, 1, 1, 1))
-  diffraction = np.zeros((detector_dist.shape[0], detector_dist.shape[1]),
-      dtype=np.complex)
-
-  for imol in range(len(atom_types)):
-    for igeo in range(len(R[imol])):
-      all_dists = calc_dists(R[imol][igeo])
-      dist_inds1 = []
-      dist_inds2 = []
-      dist_scat_amps = []
-      """
-      for i, a1 in enumerate(atom_types):
-        for j_, a2 in enumerate(atom_types[i+1:]):
-          j = j_ + i+1
-          dist_inds1.append(i)
-          dist_inds2.append(j)
-          dist_scat_amps.append(
-              scat_amps[a1](q_map[:,:,0])*scat_amps[a2](q_map[:,:,0]))
-      """
-      for i, a1 in enumerate(atom_types[imol]):
-        for j, a2 in enumerate(atom_types[imol]):
-          if i == j:
-            continue
-          dist_inds1.append(i)
-          dist_inds2.append(j)
-          dist_scat_amps.append(
-              scat_amps[a1](q_map[:,:,0])*scat_amps[a2](q_map[:,:,0]))
-
-      dist_inds = (np.array(dist_inds1), np.array(dist_inds2))
-      dist_scat_amps = np.array(dist_scat_amps)
-      dists = all_dists[dist_inds]
-
-      #print(lg.shape, q.shape, np.expand_dims(dists[:,0], axis=-1).shape)
-      ADM_to_D = 8*np.pi**2/(2*LMK[:,0] + 1)
-      """
-      C = np.complex(0,1)**L*np.sqrt(4*np.pi*(2*L + 1))
-      J = sp.special.spherical_jn(L,
-          q_map[:,:,0]*np.expand_dims(np.expand_dims(dists[:,0], axis=-1), -1))
-      Y = sp.special.sph_harm(-1*K, L,
-          np.expand_dims(np.expand_dims(dists[:,2], axis=-1), axis=-1),
-          np.expand_dims(np.expand_dims(dists[:,1], axis=-1), axis=-1))
-      """
-      
-      C = (-1)**(2*L-K-M)*np.complex(0,1)**L*np.sqrt(4*np.pi*(2*L + 1))
-      J = sp.special.spherical_jn(L,
-          q_map[:,:,0]*np.expand_dims(np.expand_dims(dists[:,0], axis=-1), -1))
-      Y = sp.special.sph_harm(-1*K, L,
-          np.expand_dims(np.expand_dims(dists[:,2], axis=-1), axis=-1),
-          np.expand_dims(np.expand_dims(dists[:,1], axis=-1), axis=-1))
-
-
-      #diffraction = np.real(dist_scat_amps*C*J*Y)
-      _diffraction = dist_scat_amps*C*J*Y
-      diffraction += np.sum(np.sum(
-          np.reshape(ADM_to_D*bases[:,itm], (-1, 1, 1, 1))*_diffraction\
-          *sp.special.sph_harm(-1*M, L,
-              np.expand_dims(q_map[:,:,2], axis=0),
-              np.expand_dims(q_map[:,:,1], axis=0)),
-              axis=1), axis=0)
-
-  diffraction /= detector_dist
-  #print("outp", calc_coeffs.shape)
-
-  return np.real(diffraction), diffraction
-
-
-
-def main(FLAGS, params):
+def main(params, on_cluster=False, time_ind=False):
 
 
   #############################################
@@ -697,26 +304,26 @@ def main(FLAGS, params):
 
   """
   x_lab,z_lab = np.meshgrid(
-      np.linspace(-1*params.detector_width/2, params.detector_width/2, params.imgBins),
-      np.linspace(-1*params.detector_height/2, params.detector_height/2, params.imgBins))
+      np.linspace(-1*params["detector_width"]/2, params["detector_width"]/2, params["imgBins"]),
+      np.linspace(-1*params["detector_height"]/2, params["detector_height"]/2, params["imgBins"]))
   pixel_dist = np.sqrt(x_lab**2 + z_lab**2)
-  detector_dist = np.sqrt(pixel_dist**2 + params.beamline_length**2)
+  detector_dist = np.sqrt(pixel_dist**2 + params["beamline_length"]**2)
   """
   q_x_lf,q_z_lf = np.meshgrid(
-      -1*(np.arange(params.imgBins)-params.NradAzmBins+1)*params.QperPix,
-      -1*(np.arange(params.imgBins)-params.NradAzmBins+1)*params.QperPix)
+      -1*(np.arange(params["imgBins"])-params["NradAzmBins"]+1)*params["QperPix"],
+      -1*(np.arange(params["imgBins"])-params["NradAzmBins"]+1)*params["QperPix"])
   q_x_lf = q_x_lf.astype(np.float32)
   q_z_lf = q_z_lf.astype(np.float32)
   q_map = np.sqrt(q_x_lf**2 + q_z_lf**2)
 
   # Detector xyz distance
-  q_template = np.arange(params.NradAzmBins, dtype=np.float32)*params.QperPix
+  q_template = np.arange(params["NradAzmBins"], dtype=np.float32)*params["QperPix"]
   deflection_angles = 2*np.arcsin(q_template*db_wvl/(4*np.pi))
-  x_template = params.beamline_length*np.tan(deflection_angles)
+  x_template = params["beamline_length"]*np.tan(deflection_angles)
   x_template = np.concatenate([np.flip(-1*x_template[1:]), x_template])
   x_lab, z_lab = np.meshgrid(x_template, x_template)
   pixel_dist = np.sqrt(x_lab**2 + z_lab**2).astype(np.float32)
-  detector_dist = np.sqrt(pixel_dist**2 + params.beamline_length**2).astype(np.float32)
+  detector_dist = np.sqrt(pixel_dist**2 + params["beamline_length"]**2).astype(np.float32)
 
   """ 
   plt.pcolormesh(x_lab)
@@ -737,7 +344,7 @@ def main(FLAGS, params):
   plt.close()
   """
 
-  if params.calculation_type == "debug":
+  if params["calculation_type"] == "debug":
     polar = np.linspace(0, np.pi, 5)[:-1]
     azim  = np.linspace(0, 2*np.pi, 5)[:-1]
     polar = np.array([np.pi/5])
@@ -773,34 +380,43 @@ def main(FLAGS, params):
             print(test)
 
 
-  if params.calculation_type == "azmAvg":
-    q = np.arange(params.NradAzmBins)*params.QperPix
+  if params["calculation_type"] == "azmAvg":
+    q = np.arange(params["NradAzmBins"])*params["QperPix"]
 
     atm_diffractions = []
     mol_diffractions = []
+
     for imol in range(len(atom_distances_polar)):
       atm_diffractions.append(np.zeros_like(q))
       mol_diffractions.append(np.zeros_like(q))
 
       # Atomic diffraction
       for i,atm in enumerate(atom_types[imol]):
-        print("ATM T: ",atm)
         atm_diffractions[imol] += np.abs(scat_amps[atm](q))**2
   
       # Molecular diffraction
-      print("SIZE: ",atom_distances_polar[0].shape)
       if atom_distances_polar[imol] is not None:
-        sincs = np.sum(
-            np.sinc((q/np.pi)\
-              *np.expand_dims(atom_distances_polar[imol][:,:,0], -1)),
-            axis=0)
-        for idst in range(len(atom_distances_types[imol])):
-          mol_diffractions[imol] += sincs[idst]\
-              *scat_amps[atom_distances_types[imol][idst][0]](q)\
-              *scat_amps[atom_distances_types[imol][idst][1]](q)
-
-        # Normalize by the number of geometries
-        mol_diffractions[imol] /= atom_distances_polar[imol].shape[0]
+        if "smear_std_ratio" not in params:
+          sincs = np.mean(
+              np.sinc((q/np.pi)\
+                *np.expand_dims(atom_distances_polar[imol][:,:,0], -1)),
+              axis=0)
+        else:
+          if atom_distances_polar[imol].shape[0] != 1:
+            raise RuntimeError("Cannot smear an ensemble of molecules from"\
+                + "an xyz file, remove 'smear_std_ratio' from parameters")
+          std_steps = np.linspace(-5, 5, 101)
+          len_ratios = np.expand_dims(std_steps, -1)*params["smear_std_ratio"] + 1
+          weights = np.exp(-0.5*std_steps**2)
+          weights /= np.sum(weights)
+          sincs = np.sum(np.reshape(weights, (-1, 1, 1))\
+              *np.sinc((q/np.pi)\
+                *np.expand_dims(len_ratios*atom_distances_polar[imol][:,:,0], -1)),
+              axis=0)
+        for itp in range(len(atom_distances_types[imol])):
+          mol_diffractions[imol] += sincs[itp]\
+              *scat_amps[atom_distances_types[imol][itp][0]](q)\
+              *scat_amps[atom_distances_types[imol][itp][1]](q)
 
     atm_diffraction = np.sum(np.array(atm_diffractions), axis=0)
     mol_diffraction = np.sum(np.array(mol_diffractions), axis=0)
@@ -808,39 +424,39 @@ def main(FLAGS, params):
 
     fName_template_dat =\
         "{0}_sim_{1}Diffraction-azmAvg_Qmax-{2:.4g}_Bins[{3}].dat"
-    fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molecule, "atm", q[-1], params.NradAzmBins))
+    fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+        params["molecule"], "atm", q[-1], params["NradAzmBins"]))
     with open(fName, "wb") as file:
       atm_diffraction.astype(np.double).tofile(file)
 
-    fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molecule, "mol", q[-1], params.NradAzmBins))
+    fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+        params["molecule"], "mol", q[-1], params["NradAzmBins"]))
     with open(fName, "wb") as file:
       mol_diffraction.astype(np.double).tofile(file)
 
-    fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-        params.molecule, "sms", q[-1], params.NradAzmBins))
+    fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+        params["molecule"], "sms", q[-1], params["NradAzmBins"]))
     with open(fName, "wb") as file:
       (q*mol_diffraction/atm_diffraction).astype(np.double).tofile(file)
 
 
     if len(mol_diffractions) > 1:
       for imol in range(len(mol_diffractions)):
-        fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molecule+"_mol{}".format(imol), 
-            "atm", q[-1], params.NradAzmBins))
+        fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+            params["molecule"]+"_mol{}".format(imol), 
+            "atm", q[-1], params["NradAzmBins"]))
         with open(fName, "wb") as file:
           atm_diffractions[imol].astype(np.double).tofile(file)
 
-        fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molecule+"_mol{}".format(imol),
-            "mol", q[-1], params.NradAzmBins))
+        fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+            params["molecule"]+"_mol{}".format(imol),
+            "mol", q[-1], params["NradAzmBins"]))
         with open(fName, "wb") as file:
           mol_diffractions[imol].astype(np.double).tofile(file)
 
-        fName = os.path.join(params.simOutputDir, fName_template_dat.format(
-            params.molecule+"_mol{}".format(imol),
-            "sms", q[-1], params.NradAzmBins))
+        fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
+            params["molecule"]+"_mol{}".format(imol),
+            "sms", q[-1], params["NradAzmBins"]))
         with open(fName, "wb") as file:
           (q*mol_diffraction[imol]/atm_diffraction[imol]).astype(np.double).tofile(file)
 
@@ -848,8 +464,8 @@ def main(FLAGS, params):
 
     fName_template_h5 =\
         "{0}_sim_diffraction-azmAvg_Qmax-{1:.4g}.h5"
-    fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-        params.molecule, q_map[params.imgBins//2,-1]))
+    fName = os.path.join(params["simOutputDir"], fName_template_h5.format(
+        params["molecule"], q[-1]))
     with h5py.File(fName, 'w') as hf:
       hf.create_dataset("q",  data=q)
       hf.create_dataset("atm_diffraction",  data=atm_diffraction)
@@ -866,14 +482,13 @@ def main(FLAGS, params):
     ax[0].set_xlim([0, q[-1]])
     ax[1].set_xlim([0, q[-1]])
     fig.savefig(os.path.join("./plots",
-        "{}_sim-diffraction-azmAvg.png".format(params.molecule)))
+        "{}_sim-diffraction-azmAvg.png".format(params["molecule"])))
     """
 
   else:
-  
-    print("CLUSTER", FLAGS.cluster)
-    LMK, bases, norms, times  = get_bases(params, logging,
-        plot=(not FLAGS.cluster))
+    if "sim_eval_times" in params:
+      params["ADM_params"]["eval_times"] = params["sim_eval_times"]
+    LMK, bases, norms, times  = get_ADMs(params["ADM_params"])#, logging, plot=(not on_cluster))
     #params, bases, times      = apply_fit_parameters(params, bases, times, logging)
     logging.info(LMK)
 
@@ -883,7 +498,7 @@ def main(FLAGS, params):
 
     signal_xyz_qf = np.concatenate([
         np.expand_dims(x, axis=-1),
-        np.expand_dims(np.ones_like(x)*params.beamline_length, axis=-1),
+        np.expand_dims(np.ones_like(x)*params["beamline_length"], axis=-1),
         np.expand_dims(z, axis=-1)],
         axis=-1)
 
@@ -935,10 +550,10 @@ def main(FLAGS, params):
         axis=-1)
     """
 
-    atm_diffraction = make_atomic_diffraction(
-        (params.imgBins, params.imgBins), detector_dist,
-        q_map_polar, atom_types, scat_amps)
+    atm_diffraction = atomic_diffraction_calculation(
+        q_map_polar, atom_types, scat_amps, detector_dist)
 
+    print(atm_diffraction)
     # Saving Results
     """
     fName = os.path.join("output",
@@ -956,22 +571,22 @@ def main(FLAGS, params):
     """
 
 
-    if params.calculation_type == "numeric":
+    if params["calculation_type"] == "numeric":
       ###  Ensemble smearing  ###
-      smearing_polar  = np.linspace(0, np.pi, params.smear_polar_bins+1,
+      smearing_polar  = np.linspace(0, np.pi, params["smear_polar_bins"]+1,
           dtype=np.float32)
-      smearing_azim   = np.linspace(0, 2*np.pi, params.smear_azim_bins+1,
+      smearing_azim   = np.linspace(0, 2*np.pi, params["smear_azim_bins"]+1,
           dtype=np.float32)
-      smearing_spin   = np.linspace(0, 2*np.pi, params.smear_spin_bins+1,
+      smearing_spin   = np.linspace(0, 2*np.pi, params["smear_spin_bins"]+1,
           dtype=np.float32)
       
       """
-      smearing_polar = np.arange(params.smear_polar_bins+1)\
-          *np.pi/(params.smear_polar_bins)
-      smearing_azim = np.arange(params.smear_azim_bins+1)\
-          *2*np.pi/(params.smear_azim_bins)
-      smearing_spin = np.arange(params.smear_spin_bins+1)\
-          *2*np.pi/(params.smear_spin_bins)
+      smearing_polar = np.arange(params["smear_polar_bins"]+1)\
+          *np.pi/(params["smear_polar_bins"])
+      smearing_azim = np.arange(params["smear_azim_bins"]+1)\
+          *2*np.pi/(params["smear_azim_bins"])
+      smearing_spin = np.arange(params["smear_spin_bins"]+1)\
+          *2*np.pi/(params["smear_spin_bins"])
       #smearing_spin = np.concatenate([smearing_spin, smearing_spin[1:]+np.pi])
       """
 
@@ -981,24 +596,24 @@ def main(FLAGS, params):
       smearing_spin   = (smearing_spin[1:] + smearing_spin[:-1])/2.
 
       """
-      smearing_polar[params.smear_polar_bins//2:] =\
-          smearing_polar[:params.smear_polar_bins//2]
-      smearing_azim[params.smear_azim_bins//2:] =\
-          smearing_azim[:params.smear_azim_bins//2]
-      smearing_spin[params.smear_spin_bins//2:] =\
-          smearing_spin[:params.smear_spin_bins//2]
+      smearing_polar[params["smear_polar_bins"]//2:] =\
+          smearing_polar[:params["smear_polar_bins"]//2]
+      smearing_azim[params["smear_azim_bins"]//2:] =\
+          smearing_azim[:params["smear_azim_bins"]//2]
+      smearing_spin[params["smear_spin_bins"]//2:] =\
+          smearing_spin[:params["smear_spin_bins"]//2]
       """
       print("VAR DELT", np.var(smearing_spin[1:] - smearing_spin[:-1]))
 
       #smearing_spin = np.array([4*np.pi/3])
       #print(smearing_spin)
       """
-      smearing_polar  = np.arange(params.smear_polar_bins)\
-          *np.pi/params.smear_polar_bins
-      smearing_azim   = np.arange(params.smear_azim_bins)\
-          *2*np.pi/params.smear_azim_bins
-      smearing_spin   = np.arange(params.smear_azim_bins)\
-          *2*np.pi/params.smear_azim_bins
+      smearing_polar  = np.arange(params["smear_polar_bins"])\
+          *np.pi/params["smear_polar_bins"]
+      smearing_azim   = np.arange(params["smear_azim_bins"])\
+          *2*np.pi/params["smear_azim_bins"]
+      smearing_spin   = np.arange(params["smear_azim_bins"])\
+          *2*np.pi/params["smear_azim_bins"]
       """
 
       smearing_ea     = np.zeros(
@@ -1014,22 +629,22 @@ def main(FLAGS, params):
           smearing_ea[i,k,:,2]  = smearing_spin
       print("OSHAPE", smearing_ea.shape)
       smearing_ea       = np.reshape(smearing_ea, (-1,3))
-      #smearing_ea = np.array([np.zeros(params.smear_azim_bins), smearing_azim, np.zeros(params.smear_azim_bins)]).transpose()
+      #smearing_ea = np.array([np.zeros(params["smear_azim_bins"]), smearing_azim, np.zeros(params["smear_azim_bins"])]).transpose()
       print("SSSSSS", smearing_ea.shape)
       smearing_jacobian = np.sin(smearing_ea[:,1])
-      smearing_jacobian *= np.pi/params.smear_polar_bins
-      smearing_jacobian *= 2*np.pi/params.smear_azim_bins
-      smearing_jacobian *= 2*np.pi/params.smear_spin_bins
+      smearing_jacobian *= np.pi/params["smear_polar_bins"]
+      smearing_jacobian *= 2*np.pi/params["smear_azim_bins"]
+      smearing_jacobian *= 2*np.pi/params["smear_spin_bins"]
       
 
       for tm in range(bases.shape[-1]):
-        if FLAGS.time_ind is not None:
-          if tm != FLAGS.time_ind:
+        if time_ind is not None:
+          if tm != time_ind:
             continue
 
-        mol_diffraction, mol_diffraction_raw = diffraction_calculation_numerical(
-            params.molecule, tm, times, LMK, bases.astype(np.float32),
-            (params.imgBins, params.imgBins),
+        mol_diffraction, mol_diffraction_raw = diffraction_calculation_numeric(
+            params["molecule"], tm, times, LMK, bases.astype(np.float32),
+            (params["imgBins"], params["imgBins"]),
             detector_dist, q_map_polar,
             atom_distances_types, atom_distances_polar,
             smearing_ea, smearing_jacobian, scat_amps, logging)
@@ -1044,12 +659,12 @@ def main(FLAGS, params):
         #plt.savefig("result.png")
         fName_template_h5 =\
             "{0}_sim_diffraction-numeric_Qmax-{1:.4g}{2}"
-        fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-            params.molecule, q_map[params.imgBins//2,-1],
+        fName = os.path.join(params["simOutputDir"], fName_template_h5.format(
+            params["molecule"], q_map[params["imgBins"]//2,-1],
             "_time-{0:.6g}".format(times[tm])))
-        if params.input_LMK is not None:
+        if params["input_LMK"] is not None:
           suffix = "_LMK"
-          for lmk in params.input_LMK:
+          for lmk in params["input_LMK"]:
             suffix += "-"+str(lmk[0])+"."+str(lmk[1])+"."+str(lmk[2])
           fName += suffix
         fName += ".h5"
@@ -1062,22 +677,26 @@ def main(FLAGS, params):
           hf.create_dataset("detector_distance", data=detector_dist)
 
 
-    elif params.calculation_type == "analytic":
-      if params.QperPix is None:
+    elif params["calculation_type"] == "analytic":
+      if params["QperPix"] is None:
         logging.fatal("Must specify QperPix for the analytic option.")
         sys.exit(0)
     
-      #if params.molecule == "N2O":
+      #if params["molecule"] == "N2O":
       #  bases *= np.expand_dims(np.sqrt(4*np.pi/(2*LMK[:,0] + 1)), -1)**2
+      dBrog = calculate_deBroglie_wavelength(params)
       for tm in range(bases.shape[-1]):
-        if FLAGS.time_ind is not None:
-          if tm != FLAGS.time_ind:
+        if time_ind is not None:
+          if tm != time_ind:
             continue
 
-        mol_diffraction, mol_diffraction_raw = diffraction_calculation_analytical(
-            tm, times, LMK, bases.astype(np.float32),
-            q_map_polar, atom_positions, atom_types, scat_amps,
-            detector_dist)
+        print("INP SHAPPPPPPPPPPPPPPPPPPPp", bases.shape)
+        print(atom_positions)
+        mol_diffraction, mol_diffraction_raw = diffraction_calculation_analytic(
+            LMK, bases.astype(np.float32)[:,tm],
+            atom_positions, atom_types, scat_amps,
+            q_map_polar, detector_dist=detector_dist, freq=dBrog)
+        print("diff test", np.all(mol_diffraction == atm_diffraction), np.amax(np.abs(mol_diffraction - atm_diffraction)))
 
         rng = np.max(np.abs([np.amax(mol_diffraction), np.amin(mol_diffraction)]))
         #plt.pcolormesh(mol_diffraction, vmax=rng, vmin=-1*rng, cmap='seismic')
@@ -1085,12 +704,12 @@ def main(FLAGS, params):
         #plt.savefig("aresult.png")
         fName_template_h5 =\
             "{0}_sim_diffraction-analytic_Qmax-{1:.4g}{2}"
-        fName = os.path.join(params.simOutputDir, fName_template_h5.format(
-            params.molecule, q_map[params.imgBins//2,-1],
+        fName = os.path.join(params["simOutputDir"], fName_template_h5.format(
+            params["molecule"], q_map[params["imgBins"]//2,-1],
             "_time-{0:.6g}".format(times[tm])))
-        if params.input_LMK is not None:
+        if params["input_LMK"] is not None:
           suffix = "_LMK"
-          for lmk in params.input_LMK:
+          for lmk in params["input_LMK"]:
             suffix += "-"+str(lmk[0])+"."+str(lmk[1])+"."+str(lmk[2])
           fName += suffix
         fName += ".h5"
@@ -1111,37 +730,46 @@ if __name__ == '__main__':
     params = get_parameters(FLAGS.run, FLAGS.molecule)
   else:
     params = get_parameters(FLAGS.run)
-  if FLAGS.molecule is not None:
-    params.molecule = FLAGS.molecule
-  FLAGS = setup(parser, output_dir=params.simOutputDir)
+  if hasattr(params, '__dict__'):
+    params = params.__dict__
 
+  if FLAGS.molecule is not None:
+    params["molecule"] = FLAGS.molecule
+  if FLAGS.output_folder is not None:
+    params["simOutputDir"] = FLAGS.output_folder
+  FLAGS = setup(parser, output_dir=params["simOutputDir"])
+
+  print("IM HERE")
   # Flag handling
   if FLAGS.calculation_type is not None:
-    params.calculation_type = FLAGS.calculation_type
+    params["calculation_type"] = FLAGS.calculation_type
   if FLAGS.xyz_file is not None:
-    params.xyz_file = FLAGS.xyz_file
+    params["xyz_file"] = FLAGS.xyz_file
   if FLAGS.output_fileName_suffix is not None:
-    params.output_fileName_suffix = FLAGS.output_fileName_suffix
+    params["output_fileName_suffix"] = FLAGS.output_fileName_suffix
   if FLAGS.basis_folder is not None:
-    params.basis_folder = FLAGS.basis_folder
+    params["basis_folder"] = FLAGS.basis_folder
   if FLAGS.LMK is not None:
-    params.input_LMK = FLAGS.LMK
+    params["input_LMK"] = FLAGS.LMK
   else:
-    params.input_LMK = None
+    params["input_LMK"] = None
   if FLAGS.time_ind is not None:
     if FLAGS.time_ind == "nan":
       FLAGS.time_ind = None
     else:
       FLAGS.time_ind = int(FLAGS.time_ind)
   if FLAGS.eval_time is not None:
-    params.sim_eval_times = np.array([float(FLAGS.eval_time)])
+    params["sim_eval_times"] = np.array([float(FLAGS.eval_time)])
     FLAGS.time_ind = 0
+  if "xyz_dir" not in params:
+    params["xyz_dir"] = "XYZ"
 
-  params.imgBins = 2*params.NradAzmBins - 1 
+  params["imgBins"] = 2*params["NradAzmBins"] - 1 
   
-  if params.calculation_type != "azmAvg":
-    from ADM import *
+  if params["calculation_type"] != "azmAvg":
+    from ADM import get_ADMs
 
-  main(FLAGS, params)
+  print("FFFFFFFFFIIIIIIIIIIIIIXXXXXXXXXXXXXX ME: Change from q_polar to freq calculation of theta/phi lf.")
+  main(params, on_cluster=FLAGS.cluster, time_ind=FLAGS.time_ind)
   
 
