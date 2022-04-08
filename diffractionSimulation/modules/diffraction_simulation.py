@@ -90,7 +90,6 @@ def get_wignerD_3d(phi_ea, theta_ea, chi_ea, l, m, k):
   D_ME = np.exp(np.complex(0,-1)*m*phi_ea)*d*np.exp(np.complex(0,-1)*k*chi_ea)
   #D_ME = d*(np.cos(-1*m*phi_ea) + np.cos(-1*k*chi_ea)\
   #    + np.complex(0,1)*(np.sin(-1*m*phi_ea) + np.sin(-1*k*chi_ea)))
-  #print("WTF", np.sin(-1*m*phi_ea))
   #print(-1*m*phi_ea)
 
   return D_ME.transpose().astype(np.complex64)
@@ -442,7 +441,6 @@ def molecular_diffraction_calculation(
 
       #diffraction = np.real(dist_scat_amps*C*J*Y)
       _diffraction = dist_scat_amps*C*J*Y
-      print("WTF",_diffraction.shape, np.expand_dims(ADM_to_D*LMK_weights, (-1, -2, -3)).shape)
       diffraction += np.sum(np.sum(
           #np.reshape(ADM_to_D*bases[:,itm], (-1, 1, 1, 1))*_diffraction\
           np.expand_dims(ADM_to_D*LMK_weights, (-1, -2, -3))*_diffraction\
