@@ -1,4 +1,4 @@
-import sys, os, glob
+import sys, os, glob, importlib
 import inspect
 import logging
 import argparse
@@ -49,6 +49,10 @@ parser.add_argument(
 parser.add_argument(
     '--xyz_file', type=str, default=None,
     help='Address to XYZ file.'
+)
+parser.add_argument(
+    '--ADM_module', type=str, default="modules.ADM",
+    help='Module name/path that contains get_ADMs'
 )
 parser.add_argument(
     '--basis_folder', default=None, type=str,
@@ -385,10 +389,12 @@ def main(params, on_cluster=False, time_ind=False):
 
     atm_diffractions = []
     mol_diffractions = []
+    mol_diffractions_sem = []
 
     for imol in range(len(atom_distances_polar)):
       atm_diffractions.append(np.zeros_like(q))
       mol_diffractions.append(np.zeros_like(q))
+      mol_diffractions_sem.append(np.zeros_like(q))
 
       # Atomic diffraction
       for i,atm in enumerate(atom_types[imol]):
@@ -396,12 +402,12 @@ def main(params, on_cluster=False, time_ind=False):
   
       # Molecular diffraction
       if atom_distances_polar[imol] is not None:
-        if "smear_std_ratio" not in params:
-          sincs = np.mean(
-              np.sinc((q/np.pi)\
-                *np.expand_dims(atom_distances_polar[imol][:,:,0], -1)),
-              axis=0)
-        else:
+        sincs = np.mean(
+            np.sinc((q/np.pi)\
+              *np.expand_dims(atom_distances_polar[imol][:,:,0], -1)),
+            axis=0)
+        sincs_var = np.zeros_like(sincs)
+        if "smear_std_ratio" in params:
           if atom_distances_polar[imol].shape[0] != 1:
             raise RuntimeError("Cannot smear an ensemble of molecules from"\
                 + "an xyz file, remove 'smear_std_ratio' from parameters")
@@ -411,20 +417,27 @@ def main(params, on_cluster=False, time_ind=False):
               *np.sqrt(atom_distances_polar[imol][:,:,0])
           weights = np.exp(-0.5*std_steps**2)
           weights /= np.sum(weights)
-          sincs = np.sum(np.reshape(weights, (-1, 1, 1))\
-              *np.sinc((q/np.pi)*np.expand_dims(new_lens, -1)),
-              axis=0)
+          sincs_ = np.sinc((q/np.pi)*np.expand_dims(new_lens, -1))
+          sincs_var = np.sum((np.reshape(weights, (-1, 1, 1))*(sincs_ - sincs))**2, axis=0)
+          sincs = np.sum(np.reshape(weights, (-1, 1, 1))*sincs_, axis=0)
         for itp in range(len(atom_distances_types[imol])):
           mol_diffractions[imol] += sincs[itp]\
               *scat_amps[atom_distances_types[imol][itp][0]](q)\
               *scat_amps[atom_distances_types[imol][itp][1]](q)
+          mol_diffractions_sem[imol] += sincs_var[itp]\
+              *scat_amps[atom_distances_types[imol][itp][0]](q)**2\
+              *scat_amps[atom_distances_types[imol][itp][1]](q)**2
 
     atm_diffraction = np.sum(np.array(atm_diffractions), axis=0)
     mol_diffraction = np.sum(np.array(mol_diffractions), axis=0)
+    mol_diffraction_sem = np.sqrt(np.sum(np.array(mol_diffractions_sem), axis=0)\
+        /len(mol_diffractions_sem)**2)
 
 
     fName_template_dat =\
         "{0}_sim_{1}Diffraction-azmAvg_Qmax-{2:.4g}_Bins[{3}].dat"
+    fName_sem_template_dat =\
+        "{0}_sim_{1}Diffraction_SEM-azmAvg_Qmax-{2:.4g}_Bins[{3}].dat"
     fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
         params["molecule"], "atm", q[-1], params["NradAzmBins"]))
     with open(fName, "wb") as file:
@@ -435,10 +448,20 @@ def main(params, on_cluster=False, time_ind=False):
     with open(fName, "wb") as file:
       mol_diffraction.astype(np.double).tofile(file)
 
+    fName = os.path.join(params["simOutputDir"], fName_sem_template_dat.format(
+        params["molecule"], "mol", q[-1], params["NradAzmBins"]))
+    with open(fName, "wb") as file:
+      mol_diffraction_sem.astype(np.double).tofile(file)
+
     fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
         params["molecule"], "sms", q[-1], params["NradAzmBins"]))
     with open(fName, "wb") as file:
       (q*mol_diffraction/atm_diffraction).astype(np.double).tofile(file)
+
+    fName = os.path.join(params["simOutputDir"], fName_sem_template_dat.format(
+        params["molecule"], "sms", q[-1], params["NradAzmBins"]))
+    with open(fName, "wb") as file:
+      (q*mol_diffraction_sem/atm_diffraction).astype(np.double).tofile(file)
 
 
     if len(mol_diffractions) > 1:
@@ -455,11 +478,25 @@ def main(params, on_cluster=False, time_ind=False):
         with open(fName, "wb") as file:
           mol_diffractions[imol].astype(np.double).tofile(file)
 
+        fName = os.path.join(params["simOutputDir"], fName_sem_template_dat.format(
+            params["molecule"]+"_mol{}".format(imol),
+            "mol", q[-1], params["NradAzmBins"]))
+        with open(fName, "wb") as file:
+          mol_diffractions_sem[imol].astype(np.double).tofile(file)
+
         fName = os.path.join(params["simOutputDir"], fName_template_dat.format(
             params["molecule"]+"_mol{}".format(imol),
             "sms", q[-1], params["NradAzmBins"]))
         with open(fName, "wb") as file:
-          (q*mol_diffraction[imol]/atm_diffraction[imol]).astype(np.double).tofile(file)
+          (q*np.sqrt(mol_diffractions[imol])\
+              /atm_diffraction[imol]).astype(np.double).tofile(file)
+
+        fName = os.path.join(params["simOutputDir"], fName_sem_template_dat.format(
+            params["molecule"]+"_mol{}".format(imol),
+            "sms", q[-1], params["NradAzmBins"]))
+        with open(fName, "wb") as file:
+          (q*np.sqrt(mol_diffractions_sem[imol])\
+              /atm_diffraction[imol]).astype(np.double).tofile(file)
 
 
 
@@ -469,9 +506,11 @@ def main(params, on_cluster=False, time_ind=False):
         params["molecule"], q[-1]))
     with h5py.File(fName, 'w') as hf:
       hf.create_dataset("q",  data=q)
-      hf.create_dataset("atm_diffraction",  data=atm_diffraction)
-      hf.create_dataset("mol_diffraction",  data=mol_diffraction)
-      hf.create_dataset("sms_diffraction",  data=q*mol_diffraction/atm_diffraction)
+      hf.create_dataset("atm_diffraction",      data=atm_diffraction)
+      hf.create_dataset("mol_diffraction",      data=mol_diffraction)
+      hf.create_dataset("mol_diffraction_sem",  data=mol_diffraction_sem)
+      hf.create_dataset("sms_diffraction",      data=q*mol_diffraction/atm_diffraction)
+      hf.create_dataset("sms_diffraction_sem",  data=q*mol_diffraction_sem/atm_diffraction)
 
 
     """
@@ -489,7 +528,7 @@ def main(params, on_cluster=False, time_ind=False):
   else:
     if "sim_eval_times" in params:
       params["ADM_params"]["eval_times"] = params["sim_eval_times"]
-    LMK, bases, norms, times  = get_ADMs(params["ADM_params"])#, logging, plot=(not on_cluster))
+    LMK, bases, norms, times  = get_ADMs(params["ADM_params"])
     #params, bases, times      = apply_fit_parameters(params, bases, times, logging)
     logging.info(LMK)
 
@@ -768,7 +807,8 @@ if __name__ == '__main__':
   params["imgBins"] = 2*params["NradAzmBins"] - 1 
   
   if params["calculation_type"] != "azmAvg":
-    from ADM import get_ADMs
+    ADM_module = import_module(params["ADM_module"])
+    get_ADMS = getattr(ADM_module, "get_ADMS")
 
   print("FFFFFFFFFIIIIIIIIIIIIIXXXXXXXXXXXXXX ME: Change from q_polar to freq calculation of theta/phi lf.")
   main(params, on_cluster=FLAGS.cluster, time_ind=FLAGS.time_ind)
