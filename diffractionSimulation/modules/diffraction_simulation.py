@@ -431,7 +431,7 @@ def molecular_diffraction_calculation(
           np.expand_dims(np.expand_dims(dists[:,1], axis=-1), axis=-1))
       """
       
-      C = (-1)**(2*L-K-M)*np.complex(0,1)**L*np.sqrt(4*np.pi*(2*L + 1))
+      C = (-1)**(K)*np.complex(0,1)**L*32*np.pi**3/(2*L + 1)
       J = sp.special.spherical_jn(L,
           q_map[:,:]*np.expand_dims(np.expand_dims(dists[:,0], axis=-1), -1))
       Y = sp.special.sph_harm(-1*K, L,
